@@ -13,7 +13,7 @@
 # limitations under the License.
 import copy
 import os
-import pickle
+import pickle  # noqa
 import random
 import signal
 from pathlib import Path
@@ -327,8 +327,10 @@ def build_dataset_infos(
 
     info_cls = INFO_CLASS_REGISTRY.get(info_class_name)
     if info_cls is None:
-        raise ValueError(f"Unknown info_class '{info_class_name}'."
-                         f"Supported classes: {list(INFO_CLASS_REGISTRY)}")
+        raise ValueError(
+            f"Unknown info_class '{info_class_name}'."
+            f"Supported classes: {list(INFO_CLASS_REGISTRY)}"
+        )
 
     # 2.Build a *new* infos instance
     if verbose:
