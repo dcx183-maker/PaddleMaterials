@@ -336,7 +336,6 @@ class MP2018Dataset(Dataset):
         for key in json_data.keys():
             for idx in idxs:
                 data[key].append(json_data[key][idx])
-
         return data, num_samples
 
     def filter_unvalid_by_property(self):

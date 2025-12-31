@@ -6,7 +6,7 @@ Spectrum Elucidation（SE） focuses on automatically (or semi‑automatically) 
 
 ## 2.Model Matrix
 
-| **Supported Functions**                      | **🌟[DiffNMR](./configs/DiffNMR/README.md)** | **[AtomSegNet](./configs/atomsegnet/README.md)** |
+| **Supported Functions**                      | **🌟[DiffNMR](./configs/diffnmr/README.md)** | **[AtomSegNet](./configs/atomsegnet/README.md)** |
 | -------------------------------------------- | :------------------------------------------: | :----------------------------------------------: |
 | **Support Material Types**                   |                                              |                                                  |
 | Organic Materials                            |                      ✅                      |                                                  |
