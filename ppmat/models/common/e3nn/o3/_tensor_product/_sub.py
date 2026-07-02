@@ -226,9 +226,7 @@ class FullTensorProduct(TensorProduct):
                     out.append((mul_1 * mul_2, ir_out))
                     instr += [(i_1, i_2, i_out, "uvuv", False)]
         out = o3.Irreps(out)
-        out, p, _ = out.sort()  # Irrreps类中有sort方法，paconvert转换后会报错, 这里不应该转换，sort函数被误会了。
-
-        # out, p, _ = paddle.sort(x=out), paddle.argsort(x=out) # 这里经过paconvert转换后会报错
+        out, p, _ = out.sort()
         instr = [
             (i_1, i_2, p[i_out], mode, train) for i_1, i_2, i_out, mode, train in instr
         ]

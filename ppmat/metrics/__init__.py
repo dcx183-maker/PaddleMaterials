@@ -16,8 +16,15 @@ import copy
 
 import paddle  # noqa
 
-from ppmat.metrics.csp_metric import CSPMetric
-from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
+try:
+    from ppmat.metrics.csp_metric import CSPMetric
+except ImportError:
+    CSPMetric = None
+
+try:
+    from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
+except ImportError:
+    DiffNMRStreamingAdapter = None
 
 __all__ = [
     "build_metric",

@@ -29,7 +29,6 @@ import numpy as np
 import paddle.distributed as dist
 from paddle.io import Dataset
 
-# Attempt to import tqdm for progress visualization
 try:
     from tqdm import tqdm
 except ImportError:
@@ -53,9 +52,6 @@ from ppmat.models import build_graph_converter
 from ppmat.utils import logger
 from ppmat.utils.misc import is_equal  # noqa
 
-# -----------------------------------------------------------------------------
-# OC20 S2EF Dataset Registry
-# -----------------------------------------------------------------------------
 OC20_S2EF_TRAIN_2M_URLS = [
     "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OC20/s2ef_train_2M/0000.parquet",  # noqa
     "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OC20/s2ef_train_2M/0001.parquet",
@@ -75,67 +71,7 @@ OC20_S2EF_TRAIN_2M_URLS = [
 
 
 class OC20S2EFDataset(Dataset):
-    """
-    Open Catalyst 2020 (OC20) S2EF (Structure to Energy and Forces) Dataset Handler.
-
-    **Overview**
-    This dataset handler reads data from Parquet shards, designed specifically for
-    large-scale molecular dynamics datasets like OC20. It manages the full lifecycle
-    of data preparation:
-    1.  **Downloading**: Fetches Parquet shards from provided URLs if not present
-        locally.
-    2.  **Parsing & Caching**: Reads Parquet files, robustly handling schema
-        variations. It extracts atomic structures and properties, caching them as
-        efficient Pickle files.
-        *Note: Includes fallback mechanisms to synthesize dummy geometry if explicit*
-        *coordinates are missing in the source file (e.g., metadata-only shards).*
-    3.  **Graph Construction**: Optionally converts crystal structures into graph
-        representations using a specified graph converter (e.g., Radius Graph),
-        with support for caching.
-    4.  **Loading**: Provides random access to samples via `__getitem__`.
-
-    **Directory Structure**
-    The `cache_path` will be structured as follows:
-        - `oc20_s2ef_shards/`: Raw Parquet files.
-        - `oc20_s2ef_cache_{converter}_cutoff_{val}/`: Root cache directory.
-            - `structures/`: Individual pickled `pymatgen.Structure` objects.
-            - `properties/`: Pickled lists of property arrays.
-            - `graphs/`: Individual pickled graph objects (if configured).
-
-    Args:
-        path (str): Root directory to store downloaded shards and cache files.
-            If the path does not exist, it will be created.
-
-        urls (Union[str, List[str]], optional): List of URLs or a single URL to
-            download the Parquet shards from. If None, defaults to
-            `OC20_S2EF_TRAIN_2M_URLS`.
-
-        property_names (Union[str, List[str]]): List of target property names to load
-            (e.g., `["energy", "forces"]`). This argument is mandatory.
-
-        url_indices (List[int], optional): If provided, selects a specific subset of
-            the `urls` list based on indices. Useful for distributed training data
-            splitting. Defaults to None.
-
-        build_graph_cfg (Dict, optional): Configuration dictionary for building graphs
-            from structures (e.g., cutoff radius, max neighbors). If None, graphs
-            will not be generated. Defaults to None.
-
-        transforms (Optional[Callable], optional): A callable transform function
-            to apply to each sample (dictionary) before returning. Defaults to None.
-
-        cache_path (Optional[str], optional): Explicit path for the cache directory.
-            If None, a default path is generated under `path` based on the graph
-            converter configuration. Defaults to None.
-
-        overwrite (bool, optional): If True, forces the rebuilding of structures,
-            properties, and graphs, ignoring existing cache files. Defaults to False.
-
-        filter_unvalid (bool, optional): If True, filters out samples containing
-            NaN/Inf values in properties or corrupted graphs. Defaults to True.
-
-        **kwargs: Additional keyword arguments for compatibility.
-    """
+    """Open Catalyst 2020 (OC20) S2EF dataset supporting Parquet shards, caching, and graph construction."""
 
     def __init__(
         self,
@@ -202,10 +138,8 @@ class OC20S2EFDataset(Dataset):
         self.overwrite = overwrite
         self.filter_unvalid = filter_unvalid
         self.build_graph_cfg = build_graph_cfg
-        # Get graph_batch_size from kwargs, default to 100 for memory efficiency
         self.graph_batch_size = kwargs.get("graph_batch_size", 100)
 
-        # define sub-directories for cache
         self.structures_dir = osp.join(self.cache_path, "structures")
         self.graphs_dir = osp.join(self.cache_path, "graphs")
         self.props_dir = osp.join(self.cache_path, "properties")
@@ -215,26 +149,21 @@ class OC20S2EFDataset(Dataset):
             os.makedirs(self.graphs_dir, exist_ok=True)
             os.makedirs(self.props_dir, exist_ok=True)
 
-        # 1) Download and ensure shard files exist locally
         local_shards = self._ensure_shards()
 
-        # 2) Check or build Structures and Properties cache
-        # Only rank 0 performs the build process to avoid race conditions
         if dist.get_rank() == 0:
             self._prepare_structures_and_properties(local_shards)
 
         if dist.is_initialized():
             dist.barrier()
 
-        # 3) Check or build Graphs cache (if configuration provided)
+        # Check or build Graphs cache (if configuration provided)
         if self.build_graph_cfg is not None:
             if dist.get_rank() == 0:
                 self._prepare_graphs()
             if dist.is_initialized():
                 dist.barrier()
 
-        # 4) Load file lists and property data into memory
-        # Sort files to ensure consistency across distributed ranks
         self.structures = [
             osp.join(self.structures_dir, f)
             for f in sorted(os.listdir(self.structures_dir))
@@ -256,13 +185,12 @@ class OC20S2EFDataset(Dataset):
             for pname in self.property_names
         }
 
-        # 5) Filter invalid data based on properties and graphs
+        # Filter invalid data based on properties and graphs
         if self.filter_unvalid:
             self._filter_by_properties()
         if self.graphs is not None:
             self._filter_by_graphs()
 
-        # 6) Ensure data length consistency across all arrays
         self._ensure_length_consistency()
 
         self.num_samples = len(self.structures)
@@ -334,46 +262,34 @@ class OC20S2EFDataset(Dataset):
             f.write("done")
 
     def _build_graphs(self, converter, structures_dir: str, graphs_dir: str) -> None:
-        """
-        Builds graph objects from structures using a SINGLE global progress bar.
-
-        This method processes structures in batches to manage memory usage, while
-        providing a unified progress visualization.
-        """
+        """Builds graph objects from structures using batch processing."""
         import gc
         import sys
 
-        # Context manager to temporarily suppress stderr
         class SuppressStderr:
             def __init__(self):
                 self.null_fds = [os.open(os.devnull, os.O_RDWR)]
-                self.save_fds = [os.dup(2)]  # Backup stderr (fd 2)
+                self.save_fds = [os.dup(2)]
 
             def __enter__(self):
-                # Redirect stderr to devnull
                 os.dup2(self.null_fds[0], 2)
 
             def __exit__(self, *_):
-                # Restore stderr
                 os.dup2(self.save_fds[0], 2)
                 for fd in self.null_fds + self.save_fds:
                     os.close(fd)
 
-        # Get file list
         files = sorted([f for f in os.listdir(structures_dir) if f.endswith(".pkl")])
         total = len(files)
         if total == 0:
             logger.warning("No structures found to convert!")
             return
 
-        # Use configurable batch size to avoid OOM (Out of Memory) errors
-        # Can be set via graph_batch_size parameter in dataset config
         batch_size = self.graph_batch_size
 
         logger.info(f"Converting {total} structures to graphs...")
         logger.info(f"Using batch size: {batch_size} to manage memory usage")
 
-        # 1. Create global progress bar
         pbar = tqdm(total=total, desc="Graph Conversion", unit="sample")
 
         for start_idx in range(0, total, batch_size):
@@ -381,28 +297,22 @@ class OC20S2EFDataset(Dataset):
             batch_files = files[start_idx:end_idx]
 
             try:
-                # Load structures for current batch
                 structures = [
                     self._load_pickle(osp.join(structures_dir, f)) for f in batch_files
                 ]
 
-                # 2. Convert to graphs (Suppress internal progress bars if any)
                 try:
                     with SuppressStderr():
                         graphs = converter(structures)
                 except Exception:
-                    # Fallback if low-level FD manipulation fails
                     graphs = converter(structures)
 
-                # Save graphs
                 for f, g in zip(batch_files, graphs):
                     self._save_pickle(osp.join(graphs_dir, f), g)
 
-                # 3. Update global progress bar
                 pbar.update(len(batch_files))
 
             except Exception as e:
-                # Restore stderr to print error
                 sys.stderr = sys.__stderr__
                 logger.warning(f"Batch {start_idx}-{end_idx} failed: {e}")
 
@@ -497,19 +407,7 @@ class OC20S2EFDataset(Dataset):
     def _build_structures_and_properties(
         self, shard_paths: List[str], structures_dir: str, props_dir: str
     ) -> None:
-        """
-        Builds structure objects and extracts properties from Parquet shards.
-
-        **CRITICAL NOTE**:
-        This method contains robust fallback logic to handle datasets that may lack
-        explicit geometry information (e.g., `pos` or `cell` columns). In such cases,
-        it **synthesizes dummy structures** (random positions, default lattice) to
-        allow the data pipeline to function.
-
-        While this enables the pipeline to run on metadata-only or partial datasets,
-        **models trained on this synthesized data will be physically meaningless**
-        regarding geometric potentials.
-        """
+        """Builds structure objects and extracts properties from Parquet shards."""
         # Initialize buffers for properties
         prop_buffers: Dict[str, List[Any]] = {p: [] for p in self.property_names}
         sample_index = 0
@@ -583,9 +481,7 @@ class OC20S2EFDataset(Dataset):
                 # Iterate through each sample in the batch
                 for i in range(nrows):
                     try:
-                        # --- Step 1: Determine Atomic Numbers (Z) ---
                         z = None
-                        # Case A: Explicit atomic numbers column exists
                         if (
                             atoms_batch is not None
                             and i < len(atoms_batch)
@@ -597,43 +493,36 @@ class OC20S2EFDataset(Dataset):
                             else:
                                 z = np.array([int(val)])
 
-                        # Case B: Derive from Element symbols (e.g. "Ag", "Au")
                         elif elem_batch is not None and i < len(elem_batch):
                             el_raw = elem_batch[i]
-                            # Handle single string (e.g. "Ag") or list
                             if isinstance(el_raw, str):
                                 z = np.array([Element(el_raw).Z])
                             elif isinstance(el_raw, (list, tuple, np.ndarray)):
                                 z = np.array([Element(s).Z for s in el_raw])
 
-                        # Case C: Fallback (Dummy Hydrogen)
                         if z is None:
-                            # Use num_atoms column if available to set size
                             n_atoms = 1
                             if chosen["num_atoms_col"] and data.get(
                                 chosen["num_atoms_col"]
                             ):
                                 n_atoms = int(data[chosen["num_atoms_col"]][i])
-                            z = np.ones(n_atoms, dtype=int)  # Dummy Hydrogen
+                            z = np.ones(n_atoms, dtype=int)
 
-                        # --- Step 2: Determine Positions (Pos) ---
+                        # Determine Positions (Pos)
                         if (
                             pos_batch is not None
                             and i < len(pos_batch)
                             and pos_batch[i] is not None
                         ):
                             pos = np.asarray(pos_batch[i], dtype=float)
-                            # Safety: align dimensions with Z
                             if pos.shape[0] != z.shape[0]:
                                 min_len = min(pos.shape[0], z.shape[0])
                                 pos = pos[:min_len]
                                 z = z[:min_len]
                         else:
-                            # WARNING: SYNTHESIZING DUMMY POSITIONS
-                            # Generate random coordinates to prevent build errors.
                             pos = np.random.rand(len(z), 3) * 10.0
 
-                        # --- Step 3: Determine Lattice (Cell) ---
+                        # Determine Lattice (Cell)
                         if (
                             cell_batch is not None
                             and i < len(cell_batch)
@@ -642,16 +531,13 @@ class OC20S2EFDataset(Dataset):
                             matrix = np.asarray(cell_batch[i], dtype=float)
                             if matrix.size == 9:
                                 matrix = matrix.reshape(3, 3)
-                            # Validate determinant to ensure non-singular cell
                             if np.abs(np.linalg.det(matrix)) < 1e-3:
                                 lattice = Lattice.cubic(20.0)
                             else:
                                 lattice = Lattice(matrix)
                         else:
-                            # WARNING: SYNTHESIZING DUMMY LATTICE
                             lattice = Lattice.cubic(20.0)
 
-                        # --- Step 4: Build Pymatgen Structure ---
                         structure = Structure(
                             lattice,
                             z,
@@ -666,17 +552,14 @@ class OC20S2EFDataset(Dataset):
                             structure,
                         )
 
-                        # --- Step 5: Extract Properties ---
                         for pname in self.property_names:
                             val = None
 
-                            # Special handling for energy
                             if pname == "energy":
                                 e_col = chosen["energy"]
                                 if e_col and data.get(e_col):
                                     val = data[e_col][i]
-                                    # Ensure energy is converted to numpy array for consistency
-                                    # Store as scalar value (not array) to maintain type consistency
+                                    # Store as scalar value
                                     if np.isscalar(val):
                                         val = float(val)  # Store as Python float
                                     else:
@@ -685,37 +568,31 @@ class OC20S2EFDataset(Dataset):
                                     chosen["reference_energy"]
                                 ):
                                     val = data[chosen["reference_energy"]][i]
-                                    # Ensure energy is converted to numpy array for consistency
                                     if np.isscalar(val):
-                                        val = float(val)  # Store as Python float
+                                        val = float(val)
                                     else:
-                                        val = float(np.asarray(val, dtype=float).item())  # Convert array to scalar
+                                        val = float(np.asarray(val, dtype=float).item())
 
-                            # Special handling for forces
                             elif pname == "forces":
                                 f_col = chosen["forces"]
                                 if f_col and data.get(f_col):
                                     val = np.asarray(data[f_col][i], dtype=float)
                                 else:
-                                    # Fallback: dummy zero forces
                                     val = np.zeros((len(z), 3))
 
-                            # Generic property handling
                             else:
                                 c = chosen.get(pname)
                                 if not c and pname in data:
                                     c = pname
                                 if c and data.get(c):
                                     val = data[c][i]
-                                    # Ensure property is converted to appropriate format
-                                    # For scalar properties, store as Python float/int
-                                    # For array properties, store as numpy array
+
                                     if val is not None:
                                         if np.isscalar(val):
-                                            # Store scalar as Python native type for consistency
+
                                             val = float(val) if isinstance(val, (float, np.floating)) else int(val) if isinstance(val, (int, np.integer)) else val
                                         else:
-                                            # Store array as numpy array
+
                                             val = np.asarray(val, dtype=float)
 
                             prop_buffers[pname].append(val)
@@ -745,10 +622,7 @@ class OC20S2EFDataset(Dataset):
             self._save_pickle(osp.join(props_dir, f"{pname}.pkl"), arr)
 
     def _filter_by_properties(self) -> None:
-        """
-        Filter out samples that contain invalid property values (e.g., NaN, Inf).
-        Operation is performed in-memory.
-        """
+        """Filter out samples with invalid property values (NaN, Inf)."""
         if not self.property_names:
             return
 
@@ -791,11 +665,6 @@ class OC20S2EFDataset(Dataset):
                 self.property_data[pname] = [self.property_data[pname][i] for i in keep]
 
     def _filter_by_graphs(self) -> None:
-        """
-        Filter out samples with invalid or missing graphs.
-        Since graphs are rebuilt fully if mismatch occurs, this is mostly a
-        sanity check.
-        """
         pass
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -826,14 +695,13 @@ class OC20S2EFDataset(Dataset):
 
         for pname in self.property_names:
             v = self.property_data[pname][idx]
-            # Ensure consistent dimensionality for output tensors
-            # Convert to numpy array and ensure proper shape for tensor conversion
+
             if v is None:
-                # Handle None values
+
                 if pname == "energy":
                     data[pname] = np.array([0.0], dtype="float32")
                 elif pname == "forces":
-                    # Get number of atoms from structure if available
+
                     if self.graphs is None and idx < len(self.structures):
                         structure = self.structures[idx]
                         if isinstance(structure, str):
@@ -845,18 +713,17 @@ class OC20S2EFDataset(Dataset):
                 else:
                     data[pname] = np.array([0.0], dtype="float32")
             elif np.isscalar(v):
-                # For scalar values, wrap in array but keep as 1D array
-                # This ensures it can be properly converted to tensor
+
                 data[pname] = np.array([float(v)], dtype="float32")
             else:
-                # For array values, ensure it's a proper numpy array
+
                 v_array = np.asarray(v, dtype="float32")
-                # Ensure at least 1D and handle 0D arrays
+
                 if v_array.ndim == 0:
-                    # 0D array (scalar array), convert to 1D
+
                     v_array = np.array([float(v_array)], dtype="float32")
                 elif v_array.ndim > 0:
-                    # Ensure contiguous array for better tensor conversion
+
                     v_array = np.ascontiguousarray(v_array, dtype="float32")
                 data[pname] = v_array
 

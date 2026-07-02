@@ -19,7 +19,7 @@ from ppmat.models.diffnmr.utils import diffgraphformer_utils
 
 class DummyExtraFeatures:
     def __init__(self):
-        """This class does not compute anything, just returns empty tensors."""
+        pass
 
     def __call__(self, noisy_data):
         X = noisy_data["X_t"]
@@ -42,20 +42,16 @@ class ExtraFeatures:
             self.eigenfeatures = EigenFeatures(mode=extra_features_type)
 
     def __call__(self, noisy_data):
-        # n: (bs,1)
-        mask_sum = paddle.sum(noisy_data["node_mask"], axis=1, keepdim=False)  # (bs,)
-        n = paddle.unsqueeze(mask_sum, axis=1) / self.max_n_nodes  # (bs,1)
+        mask_sum = paddle.sum(noisy_data["node_mask"], axis=1, keepdim=False)
+        n = paddle.unsqueeze(mask_sum, axis=1) / self.max_n_nodes
 
-        # x_cycles, y_cycles: (bs, ?)
-        x_cycles, y_cycles = self.ncycles(noisy_data)  # (bs, n_cycles)
+        x_cycles, y_cycles = self.ncycles(noisy_data)
 
         if self.features_type == "cycles":
             E = noisy_data["E_t"]
             extra_edge_attr = paddle.zeros(shape=E.shape[:-1] + [0], dtype=E.dtype)
 
-            # 等效于 torch.hstack((n, y_cycles)) => concat along axis=1
-            # 假设 n shape (bs,1), y_cycles shape (bs,k)
-            # => result shape (bs, 1+k)
+
             y_stacked = paddle.concat([n, y_cycles], axis=1)
 
             return diffgraphformer_utils.PlaceHolder(
@@ -67,9 +63,7 @@ class ExtraFeatures:
             E = noisy_data["E_t"]
             extra_edge_attr = paddle.zeros(shape=E.shape[:-1] + [0], dtype=E.dtype)
 
-            n_components, batched_eigenvalues = eigenfeatures  # (bs,1), (bs,10)
-
-            # hstack => concat along axis=1
+            n_components, batched_eigenvalues = eigenfeatures
             y_stacked = paddle.concat(
                 [n, y_cycles, n_components.astype(n.dtype), batched_eigenvalues], axis=1
             )
@@ -89,12 +83,10 @@ class ExtraFeatures:
                 nonlcc_indicator,
                 k_lowest_eigvec,
             ) = eigenfeatures
-            # X = concat [x_cycles, nonlcc_indicator, k_lowest_eigvec] along last dim
             X_cat = paddle.concat(
                 [x_cycles, nonlcc_indicator, k_lowest_eigvec], axis=-1
             )
 
-            # y = hstack => concat along axis=1
             y_stacked = paddle.concat(
                 [n, y_cycles, n_components.astype(n.dtype), batched_eigenvalues], axis=1
             )
@@ -112,26 +104,19 @@ class NodeCycleFeatures:
         self.kcycles = KNodeCycles()
 
     def __call__(self, noisy_data):
-        # adj_matrix: (bs, n, n), 取 E_t[...,1:] 并在最后一维 sum => shape (bs, n, n)
         E_t = noisy_data["E_t"]
-        adj_matrix = paddle.sum(E_t[..., 1:], axis=-1).astype("float32")  # (bs, n, n)
+        adj_matrix = paddle.sum(E_t[..., 1:], axis=-1).astype("float32")
 
-        x_cycles, y_cycles = self.kcycles.k_cycles(
-            adj_matrix=adj_matrix
-        )  # (bs, n_cycles)
+        x_cycles, y_cycles = self.kcycles.k_cycles(adj_matrix=adj_matrix)
 
-        # x_cycles 与 node_mask 对应位置相乘
-        node_mask = paddle.unsqueeze(noisy_data["node_mask"], axis=-1)  # (bs, n, 1)
+        node_mask = paddle.unsqueeze(noisy_data["node_mask"], axis=-1)
         x_cycles = x_cycles.astype(adj_matrix.dtype) * node_mask.astype(
             adj_matrix.dtype
         )
 
-        # Avoid large values when the graph is dense
         x_cycles = x_cycles / 10
         y_cycles = y_cycles / 10
 
-        # 类似 x_cycles[x_cycles > 1] = 1
-        # Paddle 不支持直接 in-place boolean mask；需要先构造mask再赋值
         bool_mask_x = x_cycles > 1
         bool_mask_y = y_cycles > 1
         x_cycles = paddle.where(bool_mask_x, paddle.ones_like(x_cycles), x_cycles)
@@ -152,23 +137,18 @@ class EigenFeatures:
     def __call__(self, noisy_data):
         E_t = noisy_data["E_t"]
         mask = noisy_data["node_mask"].astype("float32")
-        A = paddle.sum(E_t[..., 1:], axis=-1).astype("float32")  # (bs, n, n)
+        A = paddle.sum(E_t[..., 1:], axis=-1).astype("float32")
         A = A * paddle.unsqueeze(mask, axis=1) * paddle.unsqueeze(mask, axis=2)
 
         L = compute_laplacian(A, normalize=False)
 
-        # 添加正则化项以防止计算失败
         n_ = L.shape[-1]
         eps_eye = paddle.eye(n_, dtype=L.dtype) * 1e-6
         L = L + eps_eye
-        # 强制对称化
         L = (L + paddle.transpose(L, perm=[0, 2, 1])) / 2
 
-        # 构造对 mask 外节点的惩罚项
         mask_diag = paddle.eye(n_, dtype=L.dtype) * (2 * n_)
-        mask_diag = paddle.unsqueeze(mask_diag, axis=0)  # (1, n, n)
-        # (~mask) => paddle.logical_not
-        # mask_bool = mask.astype("bool")
+        mask_diag = paddle.unsqueeze(mask_diag, axis=0)
         mask_diag = (
             mask_diag
             * paddle.logical_not(paddle.unsqueeze(mask, 1)).astype(mask_diag.dtype)
@@ -181,20 +161,18 @@ class EigenFeatures:
         )
 
         if self.mode == "eigenvalues":
-            # paddle.linalg.eigvalsh => (bs, n)
-            eigvals = paddle.linalg.eigvalsh(L)  # (bs, n)
+            eigvals = paddle.linalg.eigvalsh(L)
             sum_mask = paddle.sum(mask, axis=1, keepdim=True)
-            eigvals = eigvals.astype(A.dtype) / sum_mask  # (bs,n)
+            eigvals = eigvals.astype(A.dtype) / sum_mask
 
             n_connected_comp, batch_eigenvalues = get_eigenvalues_features(eigvals)
             return (n_connected_comp.astype(A.dtype), batch_eigenvalues.astype(A.dtype))
 
         elif self.mode == "all":
             try:
-                eigvals, eigvectors = paddle.linalg.eigh(L)  # (bs,n), (bs,n,n)
+                eigvals, eigvectors = paddle.linalg.eigh(L)
             except Exception as e:
                 print(f"Warning: Eigen decomposition failed with linalg.eigh: {e}")
-                # 回退到 SVD
                 U, S, Vh = paddle.linalg.svd(L)
                 eigvals = S
                 eigvectors = paddle.transpose(Vh, perm=[0, 2, 1])
@@ -208,10 +186,7 @@ class EigenFeatures:
                 * paddle.unsqueeze(mask, axis=1)
             )
 
-            # Retrieve eigenvalues features
             n_connected_comp, batch_eigenvalues = get_eigenvalues_features(eigvals)
-
-            # Retrieve eigenvectors features
             nonlcc_indicator, k_lowest_eigvec = get_eigenvectors_features(
                 vectors=eigvectors, node_mask=mask, n_connected=n_connected_comp
             )
@@ -230,64 +205,51 @@ def compute_laplacian(adjacency, normalize: bool):
     adjacency : batched adjacency matrix (bs, n, n)
     normalize: can be None, 'sym' or 'rw'
     """
-    diag = paddle.sum(adjacency, axis=-1)  # (bs, n)
+    diag = paddle.sum(adjacency, axis=-1)
     n = diag.shape[-1]
-    D = paddle.diag_embed(diag)  # (bs, n, n)
-    combinatorial = D - adjacency  # (bs, n, n)
+    D = paddle.diag_embed(diag)
+    combinatorial = D - adjacency
 
     if not normalize:
         return (combinatorial + paddle.transpose(combinatorial, perm=[0, 2, 1])) / 2
 
     diag0 = diag.clone()
     diag = paddle.where(diag == 0, paddle.to_tensor(1e-12, dtype=diag.dtype), diag)
-    diag_norm = 1.0 / paddle.sqrt(diag)  # (bs, n)
-    D_norm = paddle.diag_embed(diag_norm)  # (bs, n, n)
-    eye_n = paddle.unsqueeze(paddle.eye(n, dtype=adjacency.dtype), axis=0)  # (1, n, n)
+    diag_norm = 1.0 / paddle.sqrt(diag)
+    D_norm = paddle.diag_embed(diag_norm)
+    eye_n = paddle.unsqueeze(paddle.eye(n, dtype=adjacency.dtype), axis=0)
 
     L = eye_n - D_norm @ adjacency @ D_norm
-    # For nodes where diag0 == 0, set their corresponding positions to 0
-    zero_mask = (diag0 == 0).astype(L.dtype)  # (bs, n)
-    # Need to broadcast to (bs, n, n), can first use unsqueeze
-    zero_mask_2d = paddle.unsqueeze(zero_mask, axis=-1)  # (bs, n, 1)
+    zero_mask = (diag0 == 0).astype(L.dtype)
+    zero_mask_2d = paddle.unsqueeze(zero_mask, axis=-1)
     zero_mask_2d = paddle.matmul(
         zero_mask_2d, paddle.ones_like(zero_mask_2d).transpose([0, 2, 1])
     )
-    # Set the corresponding position in L to 0
     L = paddle.where(zero_mask_2d > 0, paddle.zeros_like(L), L)
     return (L + paddle.transpose(L, perm=[0, 2, 1])) / 2
 
 
 def get_eigenvalues_features(eigenvalues, k=5):
-    """
-    eigenvalues: (bs, n)
-    k: num of non zero eigenvalues to keep
-    """
     ev = eigenvalues
     bs, n = ev.shape
-    # n_connected_components = (ev < 1e-5).sum(dim=-1)
-    n_connected_components = paddle.sum(ev < 1e-5, axis=-1)  # (bs,)
-
-    # TODO:Assertion: May need to handle errors here or add a check
-    # assert (n_connected_components > 0).all(), "some assert..."
+    n_connected_components = paddle.sum(ev < 1e-5, axis=-1)
 
     to_extend = max(n_connected_components.numpy()) + k - n
     if to_extend > 0:
         fill_val = paddle.full(shape=[bs, to_extend], fill_value=2.0, dtype=ev.dtype)
-        ev_extended = paddle.concat([ev, fill_val], axis=1)  # (bs, n+to_extend)
+        ev_extended = paddle.concat([ev, fill_val], axis=1)
     else:
         ev_extended = ev
 
-    # indices => shape (bs,k)
-    #   range(k) + n_connected_components.unsqueeze(1)
-    range_k = paddle.arange(k, dtype="int64")  # (k,)
-    range_k = paddle.unsqueeze(range_k, axis=0)  # (1,k)
+    range_k = paddle.arange(k, dtype="int64")
+    range_k = paddle.unsqueeze(range_k, axis=0)
     indices = range_k + paddle.unsqueeze(
         n_connected_components.astype("int64"), axis=1
-    )  # (bs,k)
+    )
 
     first_k_ev = batch_gather_2d(ev_extended, indices)
 
-    n_connected_components = paddle.unsqueeze(n_connected_components, axis=-1)  # (bs,1)
+    n_connected_components = paddle.unsqueeze(n_connected_components, axis=-1)
     return n_connected_components, first_k_ev
 
 
@@ -295,37 +257,27 @@ def batch_gather_2d(data, index):
     bs, m = data.shape
     _, k = index.shape
     row_idx = paddle.arange(bs, dtype="int64")
-    row_idx = paddle.unsqueeze(row_idx, axis=-1)  # (bs,1)
-    row_idx = paddle.expand(row_idx, [bs, k])  # (bs,k)
+    row_idx = paddle.unsqueeze(row_idx, axis=-1)
+    row_idx = paddle.expand(row_idx, [bs, k])
 
     flat_indices = paddle.stack([row_idx.flatten(), index.flatten()], axis=1)
 
-    gathered = paddle.gather_nd(data, flat_indices)  # (bs*k,)
-
+    gathered = paddle.gather_nd(data, flat_indices)
     gathered = paddle.reshape(gathered, [bs, k])
     return gathered
 
 
 def get_eigenvectors_features(vectors, node_mask, n_connected, k=2):
-    """
-    vectors (bs, n, n) : eigenvectors of Laplacian IN COLUMNS
-    returns:
-        not_lcc_indicator : indicator vectors of largest connected component (lcc) for
-            each graph  -- (bs, n, 1)
-        k_lowest_eigvec : k first eigenvectors for the largest connected component
-            -- (bs, n, k)
-    """
     bs, n = vectors.shape[0], vectors.shape[1]
     first_ev = paddle.round(vectors[:, :, 0] * 10**3) * node_mask
     random = paddle.randn(shape=[bs, n]) * (~node_mask.astype("bool")).astype("float32")
     first_ev = first_ev + random * 10**3
-    most_common = paddle.mode(x=first_ev, axis=1)[0]  # TODO
+    most_common = paddle.mode(x=first_ev, axis=1)[0]
     mask = ~(first_ev == most_common.unsqueeze(axis=1))
     not_lcc_indicator = (
         (mask * node_mask.astype("bool")).unsqueeze(axis=-1).astype(dtype="float32")
     )
 
-    # Get the eigenvectors corresponding to the first nonzero eigenvalues
     to_extend = max(n_connected) + k - n
     if to_extend > 0:
         vectors = paddle.concat(
@@ -346,29 +298,15 @@ def get_eigenvectors_features(vectors, node_mask, n_connected, k=2):
     return not_lcc_indicator, first_k_ev
 
 
-# ======================================
-# 8. batch_trace, batch_diagonal
-# ======================================
 def batch_trace(X):
-    """
-    X: shape (bs, n, n)
-    Return the trace for each sample  trace => shape (bs,)
-    """
-    diag = paddle.diagonal(X, axis1=-2, axis2=-1)  # (bs, n)
+    diag = paddle.diagonal(X, axis1=-2, axis2=-1)
     return paddle.sum(diag, axis=-1)
 
 
 def batch_diagonal(X):
-    """
-    X: shape (bs, n, n)
-    Return its diagonal => (bs, n)
-    """
     return paddle.diagonal(X, axis1=-2, axis2=-1)
 
 
-# ======================================
-# 9. KNodeCycles
-# ======================================
 class KNodeCycles:
     """Builds cycle counts for each node in a graph."""
 
@@ -377,7 +315,7 @@ class KNodeCycles:
 
     def calculate_kpowers(self):
         self.k1_matrix = self.adj_matrix.astype("float32")
-        self.d = paddle.sum(self.adj_matrix, axis=-1)  # (bs,n)
+        self.d = paddle.sum(self.adj_matrix, axis=-1)
         self.k2_matrix = paddle.matmul(
             self.k1_matrix, self.adj_matrix.astype("float32")
         )
@@ -401,7 +339,7 @@ class KNodeCycles:
         return x3, y3
 
     def k4_cycle(self):
-        diag_a4 = batch_diagonal(self.k4_matrix)  # (bs,n)
+        diag_a4 = batch_diagonal(self.k4_matrix)
         c4 = (
             diag_a4
             - self.d * (self.d - 1)
@@ -415,10 +353,10 @@ class KNodeCycles:
         return x4, y4
 
     def k5_cycle(self):
-        diag_a5 = batch_diagonal(self.k5_matrix)  # (bs,n)
-        triangles = batch_diagonal(self.k3_matrix) / 2.0  # (bs,n)
+        diag_a5 = batch_diagonal(self.k5_matrix)
+        triangles = batch_diagonal(self.k3_matrix) / 2.0
 
-        joint_cycles = self.k2_matrix * self.adj_matrix  # (bs,n,n)
+        joint_cycles = self.k2_matrix * self.adj_matrix
         prod = 2 * paddle.matmul(joint_cycles, self.d.unsqueeze(-1)).squeeze(-1)
         prod2 = 2 * paddle.matmul(self.adj_matrix, triangles.unsqueeze(-1)).squeeze(-1)
 
@@ -459,10 +397,6 @@ class KNodeCycles:
         return None, y6
 
     def k_cycles(self, adj_matrix, verbose=False):
-        """
-        adj_matrix: (bs, n, n)
-        return: (kcyclesx, kcyclesy)
-        """
         self.adj_matrix = adj_matrix
         self.calculate_kpowers()
 
@@ -478,8 +412,8 @@ class KNodeCycles:
         _, k6y = self.k6_cycle()
         assert paddle.all(k6y >= -0.1)
 
-        kcyclesx = paddle.concat([k3x, k4x, k5x], axis=-1)  # (bs, n, 3)
-        kcyclesy = paddle.concat([k3y, k4y, k5y, k6y], axis=-1)  # (bs, ncycles?)
+        kcyclesx = paddle.concat([k3x, k4x, k5x], axis=-1)
+        kcyclesy = paddle.concat([k3y, k4y, k5y, k6y], axis=-1)
         return kcyclesx, kcyclesy
 
 
@@ -489,31 +423,16 @@ class KNodeCycles:
 
 
 def paddle_mode(tensor, axis=1):
-    """
-    approximate torch.mode(...).values function, returning the most frequently
-    occurring element along the given axis.
-    Note: Now, Paddle does not have a direct mode API, so here's a simplified approach:
-        1. turn tensor into numpy
-        2. call scipy.stats or numpy method to find mode
-        3. return paddle.Tensor
-    If your scenario has high performance requirements, you may implement a more
-    efficient native statistical method for Paddle.
-    """
     import numpy as np
 
     data_np = tensor.numpy()
-    # Calculate the mode for each row
-    # if you have scipy, then you can use scipy.stats.mode directly:
-    # from scipy.stats import mode
-    # m = mode(data_np, axis=axis, keepdims=False).mode
-    # here is pure inplementation of numpy:
     bs = data_np.shape[0]
     modes = []
     for i in range(bs):
         vals, counts = np.unique(data_np[i], return_counts=True)
         max_count_idx = np.argmax(counts)
         modes.append(vals[max_count_idx])
-    modes_np = np.array(modes).reshape([-1])  # shape (bs,)
+    modes_np = np.array(modes).reshape([-1])
     return paddle.to_tensor(modes_np, dtype=tensor.dtype)
 
 

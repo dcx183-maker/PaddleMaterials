@@ -210,10 +210,8 @@ def _spherical_harmonics(
         return paddle.stack(x=[sh_0_0, sh_1_0, sh_1_1, sh_1_2], axis=-1)
     sh_2_0 = math.sqrt(15) * x * z
     sh_2_1 = math.sqrt(15) * x * y
-    # y2 = y.pow(y=2) # torch 版本
     y2 = paddle.pow(y, 2)
-    # x2z2 = x.pow(y=2) + z.pow(y=2) # torch 版本
-    x2z2 = paddle.pow(x, 2) + paddle.pow(z, 2)  # 或者直接使用 x**2 + z**2
+    x2z2 = paddle.pow(x, 2) + paddle.pow(z, 2)
     sh_2_2 = math.sqrt(5) * (y2 - 1 / 2 * x2z2)
     sh_2_3 = math.sqrt(15) * y * z
     sh_2_4 = 1 / 2 * math.sqrt(15) * (z.pow(y=2) - x.pow(y=2))

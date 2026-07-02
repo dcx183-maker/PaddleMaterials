@@ -50,98 +50,7 @@ from ppmat.utils.misc import is_equal
 
 
 class MSDnmrDataset(Dataset):
-    """Multimodal Spectrum Dataset‑Nuclear Magnetic Resonance subset handler.
-
-    This class provides utilities for loading and processing the MSD NMR dataset.
-    The dataset contains preprocess dataset includes SMILES of molecules, tokenized
-    input of NMR and atom counts of molecules. Tokenized input includs chemical shift,
-    multiplicity, intensity etc.
-    The total dataset is divided into three parts: training, validation, and testing
-    and devided into 4 parts by number of atoms per molecules.
-
-    **Dataset Overview**
-    - **Source**: Original data available at
-    https://github.com/rxn4chemistry/multimodal-spectroscopic-dataset
-    - **Preprocessed Version**:
-    ```
-    ┌───────────────────┬─────────┬─────────┬─────────┬──────────┐
-    │ Dataset Partition │ Train   │ Val     │ Test    │ Total    │
-    ├───────────────────┼─────────┼─────────┼─────────┼──────────┤
-    │       n<15        │ 109,358 │ 6,076   │ 6,075   │ 121509   │
-    ├───────────────────┼─────────┼─────────┼─────────┼──────────┤
-    │       n<20        │ 235,512 │ 13,085  │ 13,084  │ 261681   │
-    ├───────────────────┼─────────┼─────────┼─────────┼──────────┤
-    │       n<25        │ 351,273 │ 19,516  │ 19,515  │ 390,304  │
-    ├───────────────────┼─────────┼─────────┼─────────┼──────────┤
-    │       n<35        │ 517,319 │ 28,741  │ 28,739  │ 574,799  │
-    └───────────────────┴─────────┴─────────┴─────────┴──────────┘
-    ```
-    Download preprocessed data:
-    https://paddle-org.bj.bcebos.com/paddlematerial/datasets/msd/msd_nmr.zip
-
-    **Data Format**
-    The dataset is stored in CSV format with the following structure:
-    ```CSV
-    smiles,tokenized_input,atom_count
-
-    The tokenized_input is stored as a JSON-style dictionary with two top-level keys:
-    "1HNMR"  : a list of proton (^1H) NMR signals
-    "13CNMR" : a list of carbon (^13C) NMR chemical shifts
-
-    Each element in the "1HNMR" list represents a single proton signal and is itself
-    a five-element array in the form:
-    [chemical_shift_ppm, line_width_ppm, multiplicity, integration, coupling_constants]
-
-    - chemical_shift_ppm: float – the chemical shift δ value in parts per million.
-    - line_width_ppm   : float – the peak width (or half-height width) in ppm.
-    - multiplicity     : str   – the splitting pattern, e.g.:
-        * "t"   : triplet
-        * "dd"  : doublet of doublets
-        * "td"  : triplet of doublet
-        * "ddt" : doublet of doublet of triplet
-        * "qt"  : quartet of triplet
-        (other patterns may appear depending on the spectrum).
-    - integration      : str   – the number of protons represented by the signal,
-        expressed as a string like "1H", "2H", "3H", etc.
-    - coupling_constants: list of floats – a list of J couplings (Hz) associated
-        with this signal; an empty list means no couplings were reported.
-
-    The "13CNMR" entry is simply a list of float values, where each value is a carbon
-    chemical shift in ppm. No additional information (such as line widths or couplings)
-    is provided for the carbon spectra.
-    ```
-
-    Args:
-            path (str or List[str]): Path to a CSV file (or list of CSV files)
-                containing the raw dataset. Each file should have columns such
-                as 'smiles', 'tokenized_input' and 'atom_count'. If multiple
-                files are provided, they will be concatenated.
-            vocab_peakwidth_path (str): Path to a CSV file defining the
-                vocabulary for NMR peak widths. The file should have a column
-                named 'Value' whose unique entries are mapped to integer IDs.
-            vocab_split_path (str): Path to a CSV file defining the vocabulary
-                for NMR splitting types. The file should have a column named
-                'Type' whose unique entries are mapped to integer IDs.
-            remove_h (bool): Whether to remove hydrogen atoms from the graph
-                representation. When ``True``, hydrogens are stripped and the
-                remaining node features are shifted accordingly.
-            seq_len_H1 (int): Maximum sequence length for ¹H NMR tokens. 1H
-                spectra shorter than this will be padded; longer sequences are
-                truncated.
-            seq_len_C13 (int): Maximum sequence length for ¹³C NMR tokens.
-            cache (bool, optional): If ``True``, processed graphs will be cached
-                to a ``*.pkl`` file next to the input CSV. Subsequent runs
-                reuse the cache when the file exists, speeding up initialization.
-                Defaults to ``True``.
-            **kwargs: Additional keyword arguments to configure dataset behaviour.
-                Recognised keys include:
-                  - ``guidance_target`` (str): one of {'mu','homo','both'}, used
-                    when training a regressor to select which target(s) to return.
-                  - ``regressor``: boolean or object indicating whether a
-                    regression model is being trained, which affects the
-                    transform applied to the labels.
-
-    """
+    """MSD NMR dataset handler for loading and processing multimodal spectrum data."""
 
     name = "msd_nmr"
     url = "https://paddle-org.bj.bcebos.com/paddlematerial/datasets/msd/msd_nmr.zip"
@@ -165,9 +74,7 @@ class MSDnmrDataset(Dataset):
     ) -> None:
         super().__init__()
 
-        # Download the dataset if the provided path does not exist
         if not osp.exists(path):
-            logger.message("The dataset is not found. Will download it now.")
             root_path = download.get_datasets_path_from_url(self.url, self.md5)
             if data_flag == "n<15":
                 subdataset_name = "msd_nmr_nless15"
@@ -186,7 +93,6 @@ class MSDnmrDataset(Dataset):
 
         self.path = path
 
-        # Config dicts controlling molecule and graph construction
         if build_molecule_cfg is None:
             build_molecule_cfg = {
                 "format": "smiles",
@@ -195,10 +101,6 @@ class MSDnmrDataset(Dataset):
                 "remove_hs": False,
                 "kekulize": False,
             }
-            logger.message(
-                "The build_molecule_cfg is not set, will use the default "
-                f"configs: {build_molecule_cfg}"
-            )
         self.build_molecule_cfg = build_molecule_cfg
 
         if build_graph_cfg is None:
@@ -221,28 +123,20 @@ class MSDnmrDataset(Dataset):
                 "edge_mode": "bidirectional",
                 "num_cpus": 1,
             }
-            logger.message(
-                "The build_graph_cfg is not set, will use the default "
-                f"configs: {build_graph_cfg}"
-            )
         self.build_graph_cfg = build_graph_cfg
 
         if build_spectrum_cfg is None:
             build_spectrum_cfg = {
-                "__class_name__": "BuildSpectrumNMR",  # 指定要实例化的类名
-                "__init_params__": {  # 类初始化参数
-                    "seq_len_H1": 32,  # 1H谱序列长度
-                    "seq_len_C13": 32,  # 13C谱序列长度
-                    "j_len": 6,  # 耦合常数维度
-                    "unk_token": "<unk>",  # 未知token
-                    "integral_offset": 1,  # 积分偏移量
-                    "num_cpus": 1,  # 并行线程数
+                "__class_name__": "BuildSpectrumNMR",
+                "__init_params__": {
+                    "seq_len_H1": 32,
+                    "seq_len_C13": 32,
+                    "j_len": 6,
+                    "unk_token": "<unk>",
+                    "integral_offset": 1,
+                    "num_cpus": 1,
                 },
             }
-            logger.message(
-                "The build_spectrum_cfg is not set, will use the default "
-                f"configs: {build_spectrum_cfg}"
-            )
         self.build_spectrum_cfg = build_spectrum_cfg
 
         self.transforms = transforms
@@ -365,11 +259,8 @@ class MSDnmrDataset(Dataset):
         spectrum_cache_path = osp.join(self.cache_path, "spectrums")
 
         if overwrite or not self.cache_exists:
-            # convert strucutes and graphs
-            # only rank 0 process do the conversion
+            # only rank 0 process does the conversion
             if dist.get_rank() == 0:
-                # save build_molecule_cfg and build_graph_cfg and build_spechtrum_cfg
-                # to cache file
                 os.makedirs(self.cache_path, exist_ok=True)
 
                 self.save_to_cache(
@@ -384,9 +275,7 @@ class MSDnmrDataset(Dataset):
                     build_spectrum_cfg,
                 )
 
-                # convert strucutes
                 molecules = BuildMolecule(**build_molecule_cfg)(self.raw_data["smiles"])
-                # save molecules to cache file
                 os.makedirs(molecule_cache_path, exist_ok=True)
                 for i in range(self.num_samples):
                     self.save_to_cache(
@@ -396,24 +285,20 @@ class MSDnmrDataset(Dataset):
                 logger.info(
                     f"Save {self.num_samples} molecules to {molecule_cache_path}"
                 )
-                # convert graphs
                 if build_graph_cfg is not None:
                     converter = build_graph_converter(build_graph_cfg)
                     graphs = converter(molecules)
-                    # save graphs to cache file
                     os.makedirs(graph_cache_path, exist_ok=True)
                     for i in range(self.num_samples):
                         self.save_to_cache(
                             osp.join(graph_cache_path, f"{i:010d}.pkl"), graphs[i]
                         )
                     logger.info(f"Save {self.num_samples} graphs to {graph_cache_path}")
-                # convert spectrums
                 if build_spectrum_cfg is not None:
                     converter = build_spectrum_converter(
                         build_spectrum_cfg, vocabs=self.vocabs, strict=True
                     )
                     spectrums = converter(self.raw_data["tokenized_nmr"])
-                    # save spectrums to cache file
                     os.makedirs(spectrum_cache_path, exist_ok=True)
                     for i in range(self.num_samples):
                         self.save_to_cache(
@@ -423,7 +308,6 @@ class MSDnmrDataset(Dataset):
                         f"Save {self.num_samples} spectrums to {spectrum_cache_path}"
                     )
 
-            # sync all processes
             if dist.is_initialized():
                 dist.barrier()
         self.molecules = [
@@ -453,7 +337,6 @@ class MSDnmrDataset(Dataset):
             self.graphs is None or len(self.graphs) == self.num_samples
         ), "The number of graphs must be equal to the number of samples."
 
-        # filter data by specific requirement such as max atom number
         if filter_unvalid:
             self.filter_by_atom_count_raw(max_atoms=max_atoms)
 
@@ -461,7 +344,6 @@ class MSDnmrDataset(Dataset):
         """Get item at index idx."""
         data = {}
 
-        # get graph
         if self.graphs is not None:
             graph = self.graphs[idx]
             if isinstance(graph, str):
@@ -473,14 +355,12 @@ class MSDnmrDataset(Dataset):
                 molecule = self.load_from_cache(molecule)
             data["molecule_array"] = self.get_molecule_array(molecule)
 
-        # get spectrum
         if self.spectrums is not None:
             spectrum = self.spectrums[idx]
             if isinstance(spectrum, str):
                 spectrum = self.load_from_cache(spectrum)
             data["spectrum"] = spectrum
 
-        # get property-like data "y"
         if self.properties is not None:
             property = self.properties[idx]
             atom_count = self.raw_data["atom_count"][idx]
@@ -491,8 +371,6 @@ class MSDnmrDataset(Dataset):
                 "atom_count": atom_count,
             }
 
-        # data = self.transforms(data) if self.transforms is not None else data
-
         return data
 
     def __len__(self) -> int:
@@ -501,26 +379,6 @@ class MSDnmrDataset(Dataset):
     def read_data(
         self, csv_path: Union[str, List[str]]
     ) -> Tuple[List[str], List[dict], List[int], int]:
-        """Read MSD-NMR raw CSV file(s) and return parsed columns.
-
-        Expected CSV schema (3 columns in order):
-            1) smiles                      (str)
-            2) tokenized_input (JSON str)  (e.g., '{"1HNMR":[...], "13CNMR":[...]}')
-            3) atom_count                  (int)
-
-        Args:
-            csv_path (str | List[str]): Path to a CSV file, a directory containing CSVs,
-                or a list of CSV file paths.
-
-        Returns:
-            raw_data (dict): {
-                "smiles":         List[str],
-                "tokenized_nmr":  List[dict|list],   # parsed from tokenized_input
-                "atom_count":     List[int],
-            }
-            num_samples (int)
-        """
-        # 1) Collect CSV files
         if isinstance(csv_path, (list, tuple)):
             file_list = list(csv_path)
         elif osp.isdir(csv_path):
@@ -536,27 +394,20 @@ class MSDnmrDataset(Dataset):
         if len(file_list) == 0:
             return [], [], [], 0
 
-        # 2) Read and concatenate
         frames = []
         for p in file_list:
             df = pd.read_csv(p)
             frames.append(df)
         df = pd.concat(frames, ignore_index=True)
 
-        # 3) Normalize/rename columns if needed
-        # Preferred canonical names: 'smiles', 'tokenized_input', 'atom_count'
         cols = [c.lower().strip() for c in df.columns.tolist()]
         rename_map = {}
-        # Attempt to map by known names; fall back to position
-        # (0: smiles, 1: tokenized_input, 2: atom_count)
         if "smiles" not in cols:
             rename_map[df.columns[0]] = "smiles"
         else:
-            # Make sure exact canonical name
             rename_map[df.columns[cols.index("smiles")]] = "smiles"
 
         if "tokenized_input" not in cols:
-            # If user used a different header, assume second column
             rename_map[df.columns[1]] = "tokenized_input"
         else:
             rename_map[df.columns[cols.index("tokenized_input")]] = "tokenized_input"
@@ -568,7 +419,6 @@ class MSDnmrDataset(Dataset):
 
         df = df.rename(columns=rename_map)
 
-        # 4) Parse tokenized_input JSON (if it's a string)
         if "tokenized_input" not in df.columns:
             raise ValueError("Column 'tokenized_input' not found after normalization.")
 
@@ -577,14 +427,12 @@ class MSDnmrDataset(Dataset):
                 return x
             if pd.isna(x):
                 return None
-            # ensure it's a JSON string
             if not isinstance(x, str):
                 x = str(x)
             return json.loads(x)
 
         df["tokenized_input"] = df["tokenized_input"].apply(_parse_json)
 
-        # 5) Ensure atom_count is integer
         if "atom_count" not in df.columns:
             raise ValueError("Column 'atom_count' not found after normalization.")
 
@@ -592,7 +440,7 @@ class MSDnmrDataset(Dataset):
             "Int64"
         )
 
-        # 6) Drop invalid rows (any of the three columns invalid)
+        # Drop invalid rows
         valid_mask = (
             df["smiles"].astype(str).str.len().gt(0)
             & df["tokenized_input"].notna()
@@ -600,7 +448,6 @@ class MSDnmrDataset(Dataset):
         )
         df = df.loc[valid_mask].reset_index(drop=True)
 
-        # 7) Build outputs
         raw_data: Dict[str, List[Any]] = {
             "smiles": df["smiles"].astype(str).tolist(),
             "tokenized_nmr": df["tokenized_input"].tolist(),
@@ -629,29 +476,6 @@ class MSDnmrDataset(Dataset):
         allowed: set[int] | list[int] | tuple[int, ...] | None = None,
         inplace: bool = True,
     ):
-        """
-        Filter samples based on raw_data['atom_count'].
-
-        Criteria (AND):
-        - min_atoms: keep if count >= min_atoms (if provided)
-        - max_atoms: keep if count <= max_atoms (if provided)
-        - allowed:   keep if count ∈ allowed (if provided)
-
-        Returns:
-            reserve_idx (List[int]): kept indices (when inplace=True, also mutates
-                datasets).
-
-        Usage:
-            # filter by atom count range [5, 20]
-            dataset.filter_by_atom_count_raw(min_atoms=5, max_atoms=20)
-
-            # filter by specific atom counts ∈ {10, 12, 14}
-            dataset.filter_by_atom_count_raw(allowed={10, 12, 14})
-
-            # return filtered indices without modifying data
-            idx = dataset.filter_by_atom_count_raw(min_atoms=6, inplace=False)
-        """
-        # 1) Read atom counts from raw data (required source) raw_data['atom_count']
         if not hasattr(self, "raw_data") or "atom_count" not in self.raw_data:
             raise ValueError("raw_data['atom_count'] is required for filtering.")
 
@@ -659,7 +483,6 @@ class MSDnmrDataset(Dataset):
         n = counts.shape[0]
         keep = np.ones(n, dtype=bool)
 
-        # 2) Apply filtering criteria (combined with AND)
         if min_atoms is not None:
             keep &= counts >= int(min_atoms)
         if max_atoms is not None:
@@ -671,33 +494,27 @@ class MSDnmrDataset(Dataset):
         reserve_idx = np.nonzero(keep)[0].tolist()
         filtered_out = n - len(reserve_idx)
 
-        # If not mutating the dataset, return the indices only
         if not inplace:
             return reserve_idx
 
-        # 3) Slice all containers that are aligned to raw_data length
         def _slice_list(lst):
             return [lst[i] for i in reserve_idx]
 
-        # 3.1 raw_data: slice list-like values with length n
         for k, v in list(self.raw_data.items()):
             if isinstance(v, list) and len(v) == n:
                 self.raw_data[k] = _slice_list(v)
 
-        # 3.2 property_data: slice when aligned
         if hasattr(self, "property_data") and isinstance(self.property_data, dict):
             for k, v in list(self.property_data.items()):
                 if isinstance(v, list) and len(v) == n:
                     self.property_data[k] = _slice_list(v)
 
-        # 3.3 other parallel containers (if present and aligned)
         for attr in ("raw_data", "molecules", "graphs", "metas"):
             if hasattr(self, attr):
                 seq = getattr(self, attr)
                 if isinstance(seq, list) and len(seq) == n:
                     setattr(self, attr, _slice_list(seq))
 
-        # 4) Update dataset size and log
         if hasattr(self, "num_samples"):
             self.num_samples = len(reserve_idx)
 
@@ -720,14 +537,6 @@ class MSDnmrDataset(Dataset):
         return property
 
     def get_molecule_array(self, molecule):
-        """
-        Return graph-ready arrays (not a pgl.Graph):
-        - num_nodes: [1] int64
-        - edges:     [E, 2] int64 (sorted)
-        - node_feat: [N, A] float32  (A = len(atom_vocab))
-        - edge_feat: [E, K] float32  (K = len(bond_vocab) + 1, 0 reserved)
-        """
-        # ---- config / defaults (reuse same knobs as MolecularGraphConverter) ----
         atom_vocab = getattr(
             self,
             "atom_vocab",
@@ -751,7 +560,6 @@ class MSDnmrDataset(Dataset):
         add_self = bool(getattr(self, "add_self_loops", False))
         edge_mode = getattr(self, "edge_mode", "bidirectional")
 
-        # ---- RDKit Mol ----
         mol = Chem.MolFromSmiles(molecule) if isinstance(molecule, str) else molecule
         if mol is None:
             raise ValueError(f"Invalid molecule/SMILES: {molecule}")
@@ -759,7 +567,6 @@ class MSDnmrDataset(Dataset):
             mol = Chem.RemoveHs(mol)
         N = mol.GetNumAtoms()
         if N == 0:
-            # empty arrays for consistency
             return {
                 "num_nodes": ConcatData(np.asarray([0], dtype=np.int64)),
                 "edges": ConcatData(np.zeros((0, 2), dtype=np.int64)),
@@ -771,19 +578,17 @@ class MSDnmrDataset(Dataset):
                 ),
             }
 
-        # ---- node_feat (one-hot over atom_vocab) ----
         idxs = []
         for atom in mol.GetAtoms():
             sym = atom.GetSymbol()
             if sym not in atom_vocab:
                 raise ValueError(f"Unknown atom symbol '{sym}' not in atom_vocab")
             idxs.append(atom_vocab[sym])
-        idxs = np.asarray(idxs, dtype=np.int64)  # [N]
-        node_feat = np.eye(len(atom_vocab), dtype=np.float32)[idxs]  # [N, A]
+        idxs = np.asarray(idxs, dtype=np.int64)
+        node_feat = np.eye(len(atom_vocab), dtype=np.float32)[idxs]
 
-        # ---- edges & edge_feat (bond one-hot over bond_vocab + 0) ----
         rows, cols, etypes = [], [], []
-        bt2id = {bt: i + 1 for i, bt in enumerate(bond_vocab)}  # 0 reserved
+        bt2id = {bt: i + 1 for i, bt in enumerate(bond_vocab)}
 
         def push(u, v, et):
             rows.append(u)
@@ -805,9 +610,8 @@ class MSDnmrDataset(Dataset):
             else:
                 raise ValueError(f"Unknown edge_mode: {edge_mode}")
 
-        # dedup for undirected
         if edge_mode == "undirected" and rows:
-            pair = np.stack([np.asarray(rows), np.asarray(cols)], axis=1)  # [E,2]
+            pair = np.stack([np.asarray(rows), np.asarray(cols)], axis=1)
             ety = np.asarray(etypes)
             view = pair.view([("r", pair.dtype), ("c", pair.dtype)])[:, 0]
             _, keep = np.unique(view, return_index=True)
@@ -824,34 +628,23 @@ class MSDnmrDataset(Dataset):
             row_np = np.asarray(rows, dtype=np.int64)
             col_np = np.asarray(cols, dtype=np.int64)
             et_np = np.asarray(etypes, dtype=np.int64)
-            # deterministic order
             order = np.argsort(row_np * N + col_np, kind="mergesort")
             row_np, col_np, et_np = row_np[order], col_np[order], et_np[order]
-            edges = np.stack([row_np, col_np], axis=1).astype(np.int64)  # [E,2]
-            edge_feat = np.eye(len(bond_vocab) + 1, dtype=np.float32)[et_np]  # [E,K]
+            edges = np.stack([row_np, col_np], axis=1).astype(np.int64)
+            edge_feat = np.eye(len(bond_vocab) + 1, dtype=np.float32)[et_np]
         else:
             edges = np.zeros((0, 2), dtype=np.int64)
             edge_feat = np.zeros((0, len(bond_vocab) + 1), dtype=np.float32)
 
-        # ---- pack arrays (mirrors the 4 graph arguments) ----
         molecule_array = {
             "num_nodes": ConcatData(np.asarray([N], dtype=np.int64)),
-            "edges": ConcatData(edges),  # [E, 2] int64
-            "node_feat": ConcatData(node_feat),  # [N, A] float32
-            "edge_feat": ConcatData(edge_feat),  # [E, K] float32
+            "edges": ConcatData(edges),
+            "node_feat": ConcatData(node_feat),
+            "edge_feat": ConcatData(edge_feat),
         }
         return molecule_array
 
-    # ------------------------------------------------------------------
-    # Internal data preparation methods
-    # These mirror the functionality previously provided by ``MMSnmrData`` and
-    # are kept private within the dataset class to simplify usage.
-
     def _build_vocab(self, peakwidth_path: str, split_path: str):
-        """
-        Populate the peak width and split vocabularies from CSV files.
-        Return {'peakwidth': {...}, 'split': {...}} vocab dicts from CSVs.
-        """
 
         def uniq_keep_order(xs):
             seen, out = set(), []
@@ -883,9 +676,7 @@ class MSDnmrinfos:
     def __init__(self, dataloaders, cfg, recompute_statistics=False):
         self.remove_h = cfg["build_graph_cfg"]["__init_params__"]["remove_h"]
         self.dataflag = cfg["data_flag"]
-        self.need_to_strip = (
-            False  # to indicate whether we need to ignore one output from the model
-        )
+        self.need_to_strip = False
 
         self.atom_encoder = (
             {"H": 0, "C": 1, "N": 2, "O": 3, "F": 4}
@@ -1347,9 +1138,6 @@ def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
             dataset_infos is not None
         ), "If wanting to evaluate dataset, need to pass dataset_infos"
     if not osp.exists(cfg["datadir"]):
-        logger.message(
-            "The dataset directory is not found. Will save it to default path now."
-        )
         root_path = download.get_datasets_path_from_url(
             MSDnmrDataset.url, MSDnmrDataset.md5
         )
@@ -1375,10 +1163,8 @@ def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
     smiles_file_name = "train_smiles_no_h.npy" if remove_h else "train_smiles_h.npy"
     smiles_path = os.path.join(path + "_cache", "train", smiles_file_name)
     if os.path.exists(smiles_path):
-        logger.message("Dataset smiles were found")
         train_smiles = np.load(smiles_path)
     else:
-        logger.message("Computing dataset smiles...")
         train_smiles = compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h)
         np.save(smiles_path, np.array(train_smiles))
 
@@ -1395,10 +1181,6 @@ def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
                 atom_types = X[k, :n].cpu()
                 edge_types = E[k, :n, :n].cpu()
                 all_molecules.append([atom_types, edge_types])
-        logger.message(
-            "Evaluating the dataset -- number of molecules to evaluate",
-            len(all_molecules),
-        )
         metrics = compute_molecular_metrics(
             molecule_list=all_molecules,
             train_smiles=train_smiles,
@@ -1409,7 +1191,6 @@ def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
 
 
 def compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h):
-    logger.message(f"Converting MSDnmr dataset to SMILES for remove_h={remove_h}...")
     mols_smiles = []
     len_train = len(dataloader)
     invalid = 0
@@ -1417,9 +1198,7 @@ def compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h):
     for i, batch in enumerate(dataloader):
         RDLogger.DisableLog("rdApp.*")
         if i % 1000 == 0:
-            logger.message(
-                f"Converting MSDnmr dataset to SMILES {float(i)/len_train:.2%}"
-            )
+            logger.info(f"compute_MSDnmr_smiles {float(i)/len_train:.2%}")
 
         logger.info(f"compute_MSDnmr_smiles i: {i:d}")
         dense_data, node_mask = utils.to_dense(
@@ -1540,10 +1319,6 @@ class DataLoaderCollection:
 
 class DistributionNodes(object):
     def __init__(self, histogram):
-        """Compute the distribution of the number of nodes in the dataset,
-            and sample from this distribution.
-        historgram: dict. The keys are num_nodes, the values are counts
-        """
         if type(histogram) == dict:
             max_n_nodes = max(histogram.keys())
             prob = paddle.zeros(shape=max_n_nodes + 1)
@@ -1567,8 +1342,6 @@ class DistributionNodes(object):
 
 
 class SelecTargetTransform:
-    """Dynamically select specific dimensions or targets from the data."""
-
     def __init__(
         self,
         target_indices: Union[int, Tuple[int, ...]],

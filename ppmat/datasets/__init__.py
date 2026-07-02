@@ -30,23 +30,83 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
-from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
-from ppmat.datasets.jarvis_dataset import JarvisDataset
-from ppmat.datasets.matbench_dataset import MatbenchDataset
-from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
-from ppmat.datasets.mp20_dataset import MP20Dataset
-from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
-from ppmat.datasets.mp2018_dataset import MP2018Dataset
-from ppmat.datasets.mp2024_dataset import MP2024Dataset
-from ppmat.datasets.mptrj_dataset import MPTrjDataset
-from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
-from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
-from ppmat.datasets.density_dataset import DensityDataset
-from ppmat.datasets.small_density_dataset import SmallDensityDataset 
-from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
-from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
-from ppmat.datasets.qm9_dataset import QM9Dataset # noqa
-from ppmat.datasets.omol25_dataset import OMol25Dataset
+from ppmat.datasets.binary_activity_dataset import BinaryActivityDataset
+
+try:
+    from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
+except ImportError:
+    HighLevelWaterDataset = None
+
+try:
+    from ppmat.datasets.jarvis_dataset import JarvisDataset
+except ImportError:
+    JarvisDataset = None
+
+try:
+    from ppmat.datasets.matbench_dataset import MatbenchDataset
+except ImportError:
+    MatbenchDataset = None
+
+try:
+    from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
+    from ppmat.datasets.mp20_dataset import MP20Dataset
+    from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
+except ImportError:
+    AlexMP20MatterGenDataset = None
+    MP20Dataset = None
+    MP20MatterGenDataset = None
+
+try:
+    from ppmat.datasets.mp2018_dataset import MP2018Dataset
+except ImportError:
+    MP2018Dataset = None
+
+try:
+    from ppmat.datasets.mp2024_dataset import MP2024Dataset
+except ImportError:
+    MP2024Dataset = None
+
+try:
+    from ppmat.datasets.mptrj_dataset import MPTrjDataset
+except ImportError:
+    MPTrjDataset = None
+
+try:
+    from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
+    from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
+except ImportError:
+    MSDnmrDataset = None
+    MSDnmrinfos = None
+
+try:
+    from ppmat.datasets.density_dataset import DensityDataset
+except ImportError:
+    DensityDataset = None
+
+try:
+    from ppmat.datasets.small_density_dataset import SmallDensityDataset
+except ImportError:
+    SmallDensityDataset = None
+
+try:
+    from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
+except ImportError:
+    NumAtomsCrystalDataset = None
+
+try:
+    from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
+except ImportError:
+    OC20S2EFDataset = None
+
+try:
+    from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
+except ImportError:
+    QM9Dataset = None
+
+try:
+    from ppmat.datasets.omol25_dataset import OMol25Dataset
+except ImportError:
+    OMol25Dataset = None
 from ppmat.datasets.split_mptrj_data import none_to_zero
 from ppmat.datasets.transform import build_transforms
 from ppmat.utils import logger
@@ -64,9 +124,10 @@ __all__ = [
     "HighLevelWaterDataset",
     "MSDnmrDataset",
     "MatbenchDataset",
-    "DensityDataset", 
+    "DensityDataset",
     "SmallDensityDataset",
     "OMol25Dataset",
+    "BinaryActivityDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
@@ -75,16 +136,6 @@ INFO_CLASS_REGISTRY: Dict[str, type] = {
 
 
 def worker_init_fn(id: int):
-    """
-    DataLoaders workers init function.
-
-    Initialize the numpy.random seed correctly for each worker, so that
-    random augmentations between workers and/or epochs are not identical.
-
-    If a global seed is set, the augmentations are deterministic.
-
-    https://pytorch.org/docs/stable/notes/randomness.html#dataloader
-    """
     uint64_seed = paddle.get_rng_state()[0].current_seed()
     ss = np.random.SeedSequence([uint64_seed])
     np.random.seed(ss.generate_state(4))
@@ -92,59 +143,25 @@ def worker_init_fn(id: int):
 
 
 def term_mp(sig_num, frame):
-    """kill all child processes"""
     pid = os.getpid()
     pgid = os.getpgid(os.getpid())
-    print("main proc {} exit, kill process group " "{}".format(pid, pgid))
+    print("main proc {} exit, kill process group {}".format(pid, pgid))
     os.killpg(pgid, signal.SIGKILL)
 
+
 def set_signal_handlers():
-    """
-    Set up signal handlers for safe process group termination.
-
-    Registers SIGINT and SIGTERM signal handlers when:
-    1. The OS supports process groups (os.getpgid exists)
-    2. The current process is the process group leader
-
-    This allows safe termination of the entire process group via:
-    - Ctrl+C (SIGINT) 
-    - Termination signals (SIGTERM)
-
-    Safety Notes:
-    - Only sets handlers when current process is group leader
-    - Prevents accidentally terminating parent processes
-    - Uses term_mp() which kills the entire process group
-    """
     pid = os.getpid()
     try:
         pgid = os.getpgid(pid)
     except AttributeError:
-        # In case `os.getpgid` is not available, no signal handler will be set,
-        # because we cannot do safe cleanup.
         pass
     else:
-        # XXX: `term_mp` kills all processes in the process group, which in
-        # some cases includes the parent process of current process and may
-        # cause unexpected results. To solve this problem, we set signal
-        # handlers only when current process is the group leader. In the
-        # future, it would be better to consider killing only descendants of
-        # the current process.
         if pid == pgid:
-            # support exit using ctrl+c
             signal.signal(signal.SIGINT, term_mp)
             signal.signal(signal.SIGTERM, term_mp)
 
 
 def build_dataloader(cfg: Dict):
-    """Build dataloader from config.
-
-    Args:
-        cfg (Dict): config dictionary.
-
-    Returns:
-        paddle.io.DataLoader: paddle.io.DataLoader object.
-    """
-
     if cfg is None:
         return None
     world_size = dist.get_world_size()
@@ -298,28 +315,7 @@ def build_dataset_infos(
     force_refresh: bool = False,
     verbose: bool = True,
 ):
-    """Build dataset information from config.
-
-    Args:
-        cfg (Dict): Global experiment config. Must contain
-            cfg["Dataset']["train"]["dataset"] with kyes:
-                - data_flag  (e.g. n<15 / n<20 / …)
-                - remove_h   (bool, drop hydrogens or not)
-                - info_class (optional, default "MMSnmrDataset")
-        dataloaders : object, optional
-            Needed only when recompute_statistics=True.
-            Expected to implement:
-                node_counts(), node_types(), edge_counts(), valency_count(max_n)
-        recompute_statistics : bool
-            If True, compute fresh histograms from *dataloaders*.
-        cache_dir : str | Path, optional
-            Folder for pickled cache files.  Disabled when None.
-        force_refresh : bool
-            Ignore existing cache and build from scratch.
-        verbose : bool
-            Print status messages.
-    """
-    # 1.Resolve which Infos class we should instantiate
+    """Build dataset information from config."""
     if cfg is None:
         return None
     cfg = copy.deepcopy(cfg)
@@ -335,7 +331,6 @@ def build_dataset_infos(
             f"Supported classes: {list(INFO_CLASS_REGISTRY)}"
         )
 
-    # 2.Build a *new* infos instance
     if verbose:
         logger.warning(
             f"Build_dataset_infos Instantiating {info_class_name}"

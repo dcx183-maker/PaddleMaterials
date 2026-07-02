@@ -1,0 +1,106 @@
+Global:
+  label_names: ["gamma"]
+  do_train: True
+  do_eval: False
+  do_test: False
+
+Trainer:
+  max_epochs: 100
+  seed: 42
+  output_dir: ./output/gegnn_binary_gamma
+  save_freq: 5
+  log_freq: 20
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: "O1"
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: "eval_metric"
+  name_for_best_metric: "gamma"
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: "epoch"
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: GEGNNBinary
+  __init_params__:
+    in_dim: 75
+    hidden_dim: 256
+    n_classes: 1
+    mlp_dropout_rate: 0.0
+    mlp_activation: "softplus"
+    mpnn_activation: "relu"
+    mlp_num_hid_layers: 2
+    pinn_lambda: 1.0
+    property_name: ${Global.label_names}
+
+Loss:
+  __class_name__: GibbsDuhemLoss
+  __init_params__:
+    pinn_lambda: 1.0
+
+Metric:
+  gamma:
+    __class_name__: paddle.nn.L1Loss
+    __init_params__: {}
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 0.001
+        eta_min: 0.0001
+        by_epoch: True
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        data_dir: "${oc.env:PPMAT_DATA_DIR:./ppmat/datasets/gdinn_data}"
+        input_file_path: "output_binary_with_inf_all.csv"
+        solvent_list_path: "solvent_list.csv"
+        generate_all: True
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: BinaryActivityCollator
+      collate_params:
+        for_mcm: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 256
+  val:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        data_dir: "${oc.env:PPMAT_DATA_DIR:./ppmat/datasets/gdinn_data}"
+        input_file_path: "output_binary_with_inf_all.csv"
+        solvent_list_path: "solvent_list.csv"
+        generate_all: True
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: BinaryActivityCollator
+      collate_params:
+        for_mcm: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256

@@ -23,10 +23,7 @@ from ppmat.schedulers import scheduling_diffnmr
 
 
 class GraphTransformer(nn.Layer):
-    """
-    n_layers : int -- number of layers
-    dims : dict -- contains dimensions for each feature type
-    """
+    """Graph Transformer with node, edge and global features."""
 
     def __init__(
         self,
@@ -124,7 +121,6 @@ class GraphTransformer(nn.Layer):
         E_to_out = E[..., : self.out_dim_E]
         y_to_out = y[..., : self.out_dim_y]
 
-        # Initial processing for X, E, y
         new_E = self.mlp_in_E(E)
         new_E = (new_E + new_E.transpose([0, 2, 1, 3])) / 2
         X = self.mlp_in_X(X)
@@ -133,11 +129,9 @@ class GraphTransformer(nn.Layer):
         after_in = diffgraphformer_utils.PlaceHolder(X, E=new_E, y=y).mask(node_mask)
         X, E, y = after_in.X, after_in.E, after_in.y
 
-        # Transformer layers
         for layer in self.tf_layers:
             X, E, y = layer(X, E, y, node_mask)
 
-        # Output layers
         X = self.mlp_out_X(X)
         E = self.mlp_out_E(E)
         y = self.mlp_out_y(y)
@@ -146,17 +140,13 @@ class GraphTransformer(nn.Layer):
         E = (E + E_to_out) * diag_mask.astype(E.dtype)
         y = y + y_to_out
 
-        # Symmetrize E
         E = 0.5 * (E + paddle.transpose(E, perm=[0, 2, 1, 3]))
 
         return diffgraphformer_utils.PlaceHolder(X=X, E=E, y=y).mask(node_mask)
 
 
 class MolecularEncoder(nn.Layer):
-    """
-    n_layers : int -- number of layers
-    dims : dict -- contains dimensions for each feature type
-    """
+    """Molecular encoder using graph transformer layers."""
 
     def __init__(
         self,
@@ -216,23 +206,12 @@ class MolecularEncoder(nn.Layer):
         )
 
     def forward(self, X, E, y, node_mask):
-        """
-        X: (bs, n, input_dims['X'])
-        E: (bs, n, n, input_dims['E'])
-        y: (bs, input_dims['y'])
-        node_mask: (bs, n)
-        """
         bs, n = X.shape[0], X.shape[1]
 
-        diag_mask = paddle.eye(n, dtype="int64")  # (n, n)
-        diag_mask = paddle.logical_not(diag_mask)
-        diag_mask = (
-            diag_mask.unsqueeze(0).unsqueeze(-1).expand([bs, -1, -1, -1])
-        )  # (bs,n,n,1)
+        diag_mask = paddle.logical_not(paddle.eye(n, dtype="int64"))
+        diag_mask = diag_mask.unsqueeze(0).unsqueeze(-1).expand([bs, -1, -1, -1])
 
-        # MLP in
         new_E = self.mlp_in_E(E)
-        # symmetrize
         E_t = paddle.transpose(new_E, perm=[0, 2, 1, 3])
         new_E = (new_E + E_t) / 2.0
 
@@ -245,23 +224,14 @@ class MolecularEncoder(nn.Layer):
         for layer in self.tf_layers:
             X, E, Y = layer(X, E, Y, node_mask)
 
-        # Output
-        X = self.mlp_out_X(X)  # (bs, n, 512)
-        X_mean = paddle.mean(X, axis=1)  # (bs, 512)
+        X = self.mlp_out_X(X)
+        X_mean = paddle.mean(X, axis=1)
 
         return X_mean
 
 
 class XEyTransformerLayer(nn.Layer):
-    """Transformer that updates node, edge and global features
-    d_x: node features
-    d_e: edge features
-    dz : global features
-    n_head: the number of heads in the multi_head_attention
-    dim_feedforward: the dimension of the feedforward network model after self-attention
-    dropout: dropout probablility. 0 to disable
-    layer_norm_eps: eps value in layer normalizations.
-    """
+    """Transformer layer updating node, edge, and global features."""
 
     def __init__(
         self,
@@ -272,7 +242,7 @@ class XEyTransformerLayer(nn.Layer):
         dim_ffX: int = 2048,
         dim_ffE: int = 128,
         dim_ffy: int = 2048,
-        dropout: float = 0,  # TODO: 0.1,
+        dropout: float = 0,
         layer_norm_eps: float = 1e-5,
     ) -> None:
         super().__init__()
@@ -306,13 +276,6 @@ class XEyTransformerLayer(nn.Layer):
         self.activation = F.relu
 
     def forward(self, X, E, y, node_mask):
-        """Pass the input through the encoder layer.
-        X: (bs, n, d)
-        E: (bs, n, n, d)
-        y: (bs, dy)
-        node_mask: (bs, n) Mask for the src keys per batch (optional)
-        Output: newX, newE, new_y with the same shape.
-        """
         newX, newE, new_y = self.self_attn(X, E, y, node_mask=node_mask)
 
         newX_d = self.dropoutX1(newX)
@@ -351,131 +314,104 @@ class NodeEdgeBlock(nn.Layer):
         self.df = int(dx / n_head)
         self.n_head = n_head
 
-        # Attention
         self.q = nn.Linear(dx, dx)
         self.k = nn.Linear(dx, dx)
         self.v = nn.Linear(dx, dx)
 
-        # FiLM E to X
         self.e_add = nn.Linear(de, dx)
         self.e_mul = nn.Linear(de, dx)
 
-        # FiLM y to E
         self.y_e_mul = nn.Linear(dy, dx)
         self.y_e_add = nn.Linear(dy, dx)
 
-        # FiLM y to X
         self.y_x_mul = nn.Linear(dy, dx)
         self.y_x_add = nn.Linear(dy, dx)
 
-        # Process y
         self.y_y = nn.Linear(dy, dy)
         self.x_y = Xtoy(dx, dy)
         self.e_y = Etoy(de, dy)
 
-        # Output layers
         self.x_out = nn.Linear(dx, dx)
         self.e_out = nn.Linear(dx, de)
         self.y_out = nn.Sequential(nn.Linear(dy, dy), nn.ReLU(), nn.Linear(dy, dy))
 
     def forward(self, X, E, y, node_mask):
-        """
-        :param X: bs, n, d        node features
-        :param E: bs, n, n, d     edge features
-        :param y: bs, dz           global features
-        :param node_mask: bs, n
-        :return: newX, newE, new_y with the same shape.
-        """
         bs, n, _ = X.shape
-        x_mask = paddle.unsqueeze(node_mask, axis=-1).astype(X.dtype)  # bs, n, 1
-        e_mask1 = paddle.unsqueeze(x_mask, axis=2)  # bs, n, 1, 1
-        e_mask2 = paddle.unsqueeze(x_mask, axis=1)  # bs, 1, n, 1
+        x_mask = paddle.unsqueeze(node_mask, axis=-1).astype(X.dtype)
+        e_mask1 = paddle.unsqueeze(x_mask, axis=2)
+        e_mask2 = paddle.unsqueeze(x_mask, axis=1)
 
-        # 1. Map X to keys and queries
         Q = self.q(X) * x_mask
         K = self.k(X) * x_mask
         scheduling_diffnmr.assert_correctly_masked(Q, x_mask)
 
-        # 2. Reshape to (bs, n, n_head, df) with dx = n_head * df
         Q = paddle.reshape(Q, (Q.shape[0], Q.shape[1], self.n_head, self.df))
         K = paddle.reshape(K, (K.shape[0], K.shape[1], self.n_head, self.df))
 
-        Q = paddle.unsqueeze(Q, axis=2)  # (bs, 1, n, n_head, df) (bs, n, 1, n_head, df)
-        K = paddle.unsqueeze(K, axis=1)  # (bs, n, 1, n head, df) (bs, 1, n, n_head, df)
+        Q = paddle.unsqueeze(Q, axis=2)
+        K = paddle.unsqueeze(K, axis=1)
 
-        # Compute unnormalized attentions. Y is (bs, n, n, n_head, df)
         Y = Q * K
         Y = Y / math.sqrt(Y.shape[-1])
         scheduling_diffnmr.assert_correctly_masked(Y, (e_mask1 * e_mask2).unsqueeze(-1))
 
-        E1 = self.e_mul(E) * e_mask1 * e_mask2  # bs, n, n, dx
+        E1 = self.e_mul(E) * e_mask1 * e_mask2
         E1 = paddle.reshape(
             E1, (E.shape[0], E.shape[1], E.shape[2], self.n_head, self.df)
         )
 
-        E2 = self.e_add(E) * e_mask1 * e_mask2  # bs, n, n, dx
+        E2 = self.e_add(E) * e_mask1 * e_mask2
         E2 = paddle.reshape(
             E2, (E.shape[0], E.shape[1], E.shape[2], self.n_head, self.df)
         )
 
-        # Incorporate edge features to the self attention scores.
-        Y = Y * (E1 + 1) + E2  # (bs, n, n, n_head, df)
+        Y = Y * (E1 + 1) + E2
 
-        # Incorporate y to E
-        newE = paddle.flatten(Y, start_axis=3)  # bs, n, n, dx
+        newE = paddle.flatten(Y, start_axis=3)
         ye1 = paddle.unsqueeze(
             paddle.unsqueeze(self.y_e_add(y), axis=1), axis=1
-        )  # bs, 1, 1, de
+        )
         ye2 = paddle.unsqueeze(paddle.unsqueeze(self.y_e_mul(y), axis=1), axis=1)
         newE = ye1 + (ye2 + 1) * newE
 
-        # Output E
         newE = self.e_out(newE) * e_mask1 * e_mask2
         scheduling_diffnmr.assert_correctly_masked(newE, e_mask1 * e_mask2)
 
-        # Compute attentions. attn is still (bs, n, n, n_head, df)
         softmax_mask = paddle.expand(
             e_mask2, shape=(-1, n, -1, self.n_head)
-        )  # bs, 1, n, 1   bs,n,n,n_head
-        attn = masked_softmax(Y, softmax_mask, axis=2)  # bs, n, n, n_head, df
+        )
+        attn = masked_softmax(Y, softmax_mask, axis=2)
 
-        V = self.v(X) * x_mask  # bs, n, dx
+        V = self.v(X) * x_mask
         V = paddle.reshape(V, (V.shape[0], V.shape[1], self.n_head, self.df))
-        V = paddle.unsqueeze(V, axis=1)  # (bs, 1, n, n_head, df)
+        V = paddle.unsqueeze(V, axis=1)
 
-        # Compute weighted values
         weighted_V = attn * V
         weighted_V = paddle.sum(weighted_V, axis=2)
 
-        # Send output to input dim
-        weighted_V = paddle.flatten(weighted_V, start_axis=2)  # bs, n, dx
+        weighted_V = paddle.flatten(weighted_V, start_axis=2)
 
-        # Incorporate y to X
         yx1 = paddle.unsqueeze(self.y_x_add(y), axis=1)
         yx2 = paddle.unsqueeze(self.y_x_mul(y), axis=1)
         newX = yx1 + (yx2 + 1) * weighted_V
 
-        # Output X
         newX = self.x_out(newX) * x_mask
 
-        # Process y based on X axnd E
         y = self.y_y(y)
         e_y = self.e_y(E, e_mask1, e_mask2)
         x_y = self.x_y(X, x_mask)
         new_y = y + x_y + e_y
-        new_y = self.y_out(new_y)  # bs, dy
+        new_y = self.y_out(new_y)
 
         return newX, newE, new_y
 
 
 class Xtoy(nn.Layer):
     def __init__(self, dx, dy):
-        """Map node features to global features"""
         super().__init__()
         self.lin = paddle.nn.Linear(in_features=4 * dx, out_features=dy)
 
     def forward(self, X, x_mask):
-        """X: bs, n, dx."""
         x_mask = paddle.expand(x_mask, shape=[-1, -1, X.shape[-1]])
         float_imask = 1 - x_mask.astype("float32")
         m = paddle.sum(X, axis=1) / paddle.sum(x_mask, axis=1)
@@ -491,15 +427,10 @@ class Xtoy(nn.Layer):
 
 class Etoy(nn.Layer):
     def __init__(self, d, dy):
-        """Map edge features to global features."""
         super().__init__()
         self.lin = paddle.nn.Linear(in_features=4 * d, out_features=dy)
 
     def forward(self, E, e_mask1, e_mask2):
-        """
-        E: bs, n, n, de
-        Features relative to the diagonal of E could potentially be added.
-        """
         mask = paddle.expand(e_mask1 * e_mask2, shape=[-1, -1, -1, E.shape[-1]])
         float_imask = 1 - mask.astype("float32")
         divide = paddle.sum(mask, axis=(1, 2))
@@ -516,21 +447,9 @@ class Etoy(nn.Layer):
 
 
 def masked_softmax(x, mask, axis=-1):
-    """
-    Perform softmax over masked values in `x`.
-
-    Args:
-        x: Tensor, the input data.
-        mask: Tensor, the binary mask of the same shape as `x`.
-        axis: The axis to apply softmax.
-
-    Returns:
-        Tensor with masked softmax applied.
-    """
     if paddle.sum(mask) == 0:
         return x
 
-    # TODO: ndim check: only support adding dimensions backwards now
     x_dims = x.ndim
     mask_dims = mask.ndim
     if mask_dims < x_dims:

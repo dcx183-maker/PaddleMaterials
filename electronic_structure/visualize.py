@@ -46,7 +46,7 @@ def draw_stack(density, atom_type=None, atom_coord=None, dim=-1):
     image = PIL.Image.open(buf)
     image = paddle.vision.transforms.ToTensor()(
         image
-    )  # 这个是paconvert自动改的，应该是准确的把，之前是torchvision.transforms.ToTensor()
+    )
     image = image.transpose([1, 2, 0])  # add in 0319
     plt.close()
     return image.numpy()  # modified in 0319

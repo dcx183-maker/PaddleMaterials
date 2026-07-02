@@ -22,26 +22,83 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
-from ppmat.models.chgnet.chgnet import CHGNet
-from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
-from ppmat.models.comformer.comformer import iComformer
-from ppmat.models.comformer.comformer_graph_converter import ComformerGraphConverter
-from ppmat.models.common.graph_converter import CrystalNN
-from ppmat.models.common.graph_converter import FindPointsInSpheres
-from ppmat.models.common.graph_converter import MolecularGraphConverter
-from ppmat.models.diffcsp.diffcsp import DiffCSP
-from ppmat.models.diffnmr.diffnmr import DiffNMR
-from ppmat.models.diffnmr.diffnmr import DiffPrior
-from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
-from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
-from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
-from ppmat.models.mattergen.mattergen import MatterGen
-from ppmat.models.mattergen.mattergen import MatterGenWithCondition
-from ppmat.models.mattersim.m3gnet import M3GNet
-from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
-from ppmat.models.megnet.megnet import MEGNetPlus
-from ppmat.models.infgcn.infgcn import InfGCN
-from ppmat.models.mateno.mateno import MatENO
+from ppmat.models.gdinn.model_gnn import GEGNNBinary
+from ppmat.models.gdinn.model_gnn import SolvGNNBinary
+from ppmat.models.gdinn.model_gnn import SolvGNNxMLPBinary
+from ppmat.models.gdinn.model_mcm import MCMMultiMLP
+
+try:
+    from ppmat.models.chgnet.chgnet import CHGNet
+    from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
+except ImportError:
+    CHGNet = None
+    CHGNetGraphConverter = None
+
+try:
+    from ppmat.models.comformer.comformer import iComformer
+    from ppmat.models.comformer.comformer_graph_converter import ComformerGraphConverter
+except ImportError:
+    iComformer = None
+    ComformerGraphConverter = None
+
+try:
+    from ppmat.models.common.graph_converter import CrystalNN
+    from ppmat.models.common.graph_converter import FindPointsInSpheres
+    from ppmat.models.common.graph_converter import MolecularGraphConverter
+except ImportError:
+    CrystalNN = None
+    FindPointsInSpheres = None
+    MolecularGraphConverter = None
+
+try:
+    from ppmat.models.diffcsp.diffcsp import DiffCSP
+except ImportError:
+    DiffCSP = None
+
+try:
+    from ppmat.models.diffnmr.diffnmr import DiffNMR
+    from ppmat.models.diffnmr.diffnmr import DiffPrior
+    from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
+    from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
+except ImportError:
+    DiffNMR = None
+    DiffPrior = None
+    MolecularGraphFormer = None
+    NMRNetCLIP = None
+
+try:
+    from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
+except ImportError:
+    DimeNetPlusPlus = None
+
+try:
+    from ppmat.models.mattergen.mattergen import MatterGen
+    from ppmat.models.mattergen.mattergen import MatterGenWithCondition
+except ImportError:
+    MatterGen = None
+    MatterGenWithCondition = None
+
+try:
+    from ppmat.models.mattersim.m3gnet import M3GNet
+    from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
+except ImportError:
+    M3GNet = None
+    M3GNetGraphConvertor = None
+
+try:
+    from ppmat.models.megnet.megnet import MEGNetPlus
+except ImportError:
+    MEGNetPlus = None
+
+try:
+    from ppmat.models.infgcn.infgcn import InfGCN
+except ImportError:
+    InfGCN = None
+
+try:
+    from ppmat.models.mateno.mateno import MatENO
+except ImportError:
+    MatENO = None
 from ppmat.utils import download
 from ppmat.utils import logger
 from ppmat.utils import save_load
@@ -67,9 +124,12 @@ __all__ = [
     "DiffNMR",
     "InfGCN",
     "MatENO",
+    "SolvGNNBinary",
+    "SolvGNNxMLPBinary",
+    "GEGNNBinary",
+    "MCMMultiMLP",
 ]
 
-# Warning: The key of the dictionary must be consistent with the file name of the value
 MODEL_REGISTRY = {
     "comformer_mp2018_train_60k_e_form": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_e_form.zip",
     "comformer_mp2018_train_60k_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_band_gap.zip",
@@ -115,11 +175,6 @@ MODEL_REGISTRY = {
 
 
 def build_graph_converter(cfg: Dict):
-    """Build graph converter.
-
-    Args:
-        cfg (Dict): Graph converter config.
-    """
     if cfg is None:
         return None
     cfg = copy.deepcopy(cfg)
@@ -133,31 +188,10 @@ def build_graph_converter(cfg: Dict):
 
 def build_model(
     cfg: Dict[str, Any],
-    strict_unused: bool = False,  # True → raise if some runtime deps are not consumed
-    override: bool = True,  # True → runtime_deps override same-named __init_params__
+    strict_unused: bool = False,
+    override: bool = True,
     **runtime_deps,
 ):
-    """Build Model.
-
-    Args:
-        cfg (Dict): Model config.
-            {
-                "__class_name__": "pkg.module.MyModel",
-                "__init_params__": { "encoder_cfg": {...}, "decoder_cfg": {...}, ... }
-                    # Only serializable hyperparameters
-            }
-        strict_unused : bool, optional (default: False)
-            If True, raise a TypeError when any key in `runtime_deps` is not consumed
-            by the model constructor (i.e., the constructor does not accept that name).
-        override : bool, optional (default: True)
-            Conflict policy when a key exists in both `__init_params__` and
-            `runtime_deps`. If True, the value from `runtime_deps` wins; otherwise the
-            config value is kept and the runtime value is ignored.
-        runtime_deps: Runtime objects, such as dataset_infos=...
-
-    Returns:
-        nn.Layer: Model object.
-    """
     if cfg is None:
         return None
     cfg = copy.deepcopy(cfg)
