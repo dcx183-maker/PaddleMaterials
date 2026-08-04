@@ -229,8 +229,8 @@ class TestGEGNNBinary(unittest.TestCase):
         self.assertEqual(
             OmegaConf.to_container(config, resolve=False)["Dataset"]["train"][
                 "dataset"
-            ]["__init_params__"]["data_dir"],
-            "${oc.env:PPMAT_DATA_DIR,./ppmat/datasets/gegnn_data}",
+            ]["__init_params__"]["path"],
+            "${oc.env:PPMAT_DATA_PATH,./data/binary_activity/output_binary_with_inf_all.csv}",
         )
         self.assertNotIn("collate_params", config.Dataset["train"]["loader"])
 
@@ -264,8 +264,7 @@ class TestBinaryActivitySplits(unittest.TestCase):
 
     def _dataset(self, root_dir, split_mode, split_part, fold=0):
         return BinaryActivityDataset(
-            data_dir=None,
-            input_file_path=os.path.join(root_dir, "binary.csv"),
+            path=os.path.join(root_dir, "binary.csv"),
             solvent_list_path=os.path.join(root_dir, "solvent_list.csv"),
             split_mode=split_mode,
             split_part=split_part,

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import os.path as osp
 from typing import Optional
 
 import numpy as np
@@ -24,8 +25,8 @@ from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.utils import download
 from ppmat.utils import logger
-from ppmat.utils.download import get_path_from_url
 
 __all__ = ["BinaryActivityDataset", "BinaryActivityCollator"]
 
@@ -109,6 +110,8 @@ _DATA_URL = (
     "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
     "thermodynamic_data_of_binary_mixtures/"
 )
+_DATA_FILE = "output_binary_with_inf_all.csv"
+_SOLVENT_FILE = "solvent_list.csv"
 
 
 def smiles_to_pgl_graph(smiles, add_self_loop=True):
@@ -158,11 +161,23 @@ class BinaryActivityDataset(Dataset):
     TPSA-stratified cross-validation protocol; ``system_extra`` keeps each ordered
     solvent pair in a single fold.
 
+    Dataset format:
+        ```text
+        binary_activity/
+        ├── output_binary_with_inf_all.csv
+        └── solvent_list.csv
+        ```
+        The binary-mixture CSV must contain `solv1`, `solv2`, `solv1_x`,
+        `solv1_gamma`, and `solv2_gamma`. The solvent CSV is indexed by
+        `solvent_id` and must contain `smiles_can`.
+
     Args:
-        input_file_path: Name or path of the binary-mixture CSV.
-        solvent_list_path: Name or path of the solvent metadata CSV.
-        data_dir: Directory containing the CSV files. Missing files are downloaded
-            from the public PaddleMaterials dataset location.
+        path: Path to the binary-mixture CSV. If it does not exist, the CSV is
+            downloaded to the shared PaddleMaterials dataset cache and sibling solvent
+            metadata is read from the same directory. Defaults to
+            `./data/binary_activity/output_binary_with_inf_all.csv`.
+        solvent_list_path: Optional path to the solvent metadata CSV. When omitted,
+            `solvent_list.csv` is read from the same directory as `path`.
         split_mode: ``all``, ``comp_inter``, or ``system_extra``.
         split_part: ``all``, ``train``, or ``val``.
         fold: Validation fold index when a split mode is enabled.
@@ -171,7 +186,8 @@ class BinaryActivityDataset(Dataset):
     """
 
     name = "binary_activity"
-    url = _DATA_URL
+    url = _DATA_URL + _DATA_FILE
+    solvent_url = _DATA_URL + _SOLVENT_FILE
 
     _REQUIRED_COLUMNS = {
         "solv1",
@@ -185,9 +201,8 @@ class BinaryActivityDataset(Dataset):
 
     def __init__(
         self,
-        input_file_path: str = "output_binary_with_inf_all.csv",
-        solvent_list_path: str = "solvent_list.csv",
-        data_dir: Optional[str] = None,
+        path: str = "./data/binary_activity/output_binary_with_inf_all.csv",
+        solvent_list_path: Optional[str] = None,
         split_mode: str = "all",
         split_part: str = "all",
         fold: int = 0,
@@ -200,16 +215,13 @@ class BinaryActivityDataset(Dataset):
         self.solvent_data = {}
         self.build_molecule = BuildMolecule(format="smiles")
 
-        if data_dir is not None:
-            input_file_path, solvent_list_path = self._download_data(
-                data_dir, input_file_path, solvent_list_path
-            )
+        path, solvent_list_path = self._resolve_data_paths(path, solvent_list_path)
 
-        self.input_file_path = input_file_path
+        self.path = path
         self.solvent_list_path = solvent_list_path
-        if input_file_path and os.path.exists(input_file_path):
+        if osp.exists(path):
             solvent_list = pd.read_csv(solvent_list_path, index_col="solvent_id")
-            self.dataset = pd.read_csv(input_file_path, low_memory=False)
+            self.dataset = pd.read_csv(path, low_memory=False)
             self._validate_dataset_columns()
             self.dataset = self._apply_split(
                 split_mode=split_mode,
@@ -222,7 +234,7 @@ class BinaryActivityDataset(Dataset):
         else:
             if split_mode != "all" or split_part != "all":
                 raise FileNotFoundError(
-                    "A split was requested, but the binary-mixture CSV is unavailable."
+                    f"Binary-mixture CSV is unavailable: {path}"
                 )
             self.dataset = pd.DataFrame()
             self.solvent_smiles = {}
@@ -233,26 +245,20 @@ class BinaryActivityDataset(Dataset):
         self.num_folds = num_folds
         self.seed = seed
         logger.info(
-            f"Load {len(self.dataset)} binary-mixture samples from {input_file_path}"
+            f"Load {len(self.dataset)} binary-mixture samples from {path}"
         )
 
-    def _download_data(self, data_dir, input_file_path, solvent_list_path):
-        os.makedirs(data_dir, exist_ok=True)
-
-        input_full_path = os.path.join(data_dir, input_file_path)
-        solvent_full_path = os.path.join(data_dir, solvent_list_path)
-
-        if not os.path.exists(input_full_path):
-            url = _DATA_URL + input_file_path
-            logger.info("Downloading {} to {}".format(url, input_full_path))
-            get_path_from_url(url, data_dir, decompress=False)
-
-        if not os.path.exists(solvent_full_path):
-            url = _DATA_URL + solvent_list_path
-            logger.info("Downloading {} to {}".format(url, solvent_full_path))
-            get_path_from_url(url, data_dir, decompress=False)
-
-        return input_full_path, solvent_full_path
+    def _resolve_data_paths(self, path, solvent_list_path):
+        if not osp.exists(path):
+            logger.message("The dataset is not found. Will download it now.")
+            path = download.get_datasets_path_from_url(self.url)
+        if solvent_list_path is None:
+            solvent_list_path = osp.join(osp.dirname(path), _SOLVENT_FILE)
+        if not osp.exists(solvent_list_path):
+            download.get_path_from_url(
+                self.solvent_url, osp.dirname(path), decompress=False
+            )
+        return path, solvent_list_path
 
     def _validate_dataset_columns(self):
         missing = self._REQUIRED_COLUMNS.difference(self.dataset.columns)

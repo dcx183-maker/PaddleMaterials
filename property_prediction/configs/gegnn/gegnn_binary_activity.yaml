@@ -74,9 +74,7 @@ Dataset:
     dataset:
       __class_name__: BinaryActivityDataset
       __init_params__:
-        data_dir: "${oc.env:PPMAT_DATA_DIR,./ppmat/datasets/gegnn_data}"
-        input_file_path: "output_binary_with_inf_all.csv"
-        solvent_list_path: "solvent_list.csv"
+        path: "${oc.env:PPMAT_DATA_PATH,./data/binary_activity/output_binary_with_inf_all.csv}"
         split_mode: "comp_inter"
         split_part: "train"
         fold: 0
@@ -96,9 +94,7 @@ Dataset:
     dataset:
       __class_name__: BinaryActivityDataset
       __init_params__:
-        data_dir: "${oc.env:PPMAT_DATA_DIR,./ppmat/datasets/gegnn_data}"
-        input_file_path: "output_binary_with_inf_all.csv"
-        solvent_list_path: "solvent_list.csv"
+        path: "${oc.env:PPMAT_DATA_PATH,./data/binary_activity/output_binary_with_inf_all.csv}"
         split_mode: "comp_inter"
         split_part: "val"
         fold: 0
