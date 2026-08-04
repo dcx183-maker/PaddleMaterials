@@ -28,7 +28,6 @@ import warnings
 
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
-from ppmat.datasets.gegnn_dataset import BinaryActivityCollator
 from ppmat.datasets.geometric_data_type.batch import Batch
 from ppmat.datasets.geometric_data_type.data import Data
 
