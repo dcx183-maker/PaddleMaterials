@@ -25,6 +25,8 @@ from pymatgen.core import Structure
 from tqdm import tqdm
 
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.gegnn_dataset import BinaryActivityCollator
+from ppmat.datasets.gegnn_dataset import smiles_to_pgl_graph
 from ppmat.datasets.transform import build_post_transforms
 from ppmat.models import build_graph_converter
 from ppmat.models import build_model
@@ -183,6 +185,36 @@ class PropertyPredictor:
 
             return result
 
+    def from_binary_mixture(self, smiles1, smiles2, x1):
+        """Predict binary-mixture activity coefficients from two SMILES strings."""
+        from rdkit.Chem import rdMolDescriptors
+
+        x1 = float(x1)
+        if not 0.0 <= x1 <= 1.0:
+            raise ValueError("x1 must be in the interval [0, 1].")
+
+        graphs = [smiles_to_pgl_graph(smiles) for smiles in (smiles1, smiles2)]
+        if any(graph is None for graph in graphs):
+            raise ValueError("Both mixture components must be valid SMILES strings.")
+
+        molecules = [
+            BuildMolecule(format="smiles")(smiles) for smiles in (smiles1, smiles2)
+        ]
+        hba = [rdMolDescriptors.CalcNumHBA(mol) for mol in molecules]
+        hbd = [rdMolDescriptors.CalcNumHBD(mol) for mol in molecules]
+        sample = {
+            "g1": graphs[0],
+            "g2": graphs[1],
+            "x1": x1,
+            "x2": 1.0 - x1,
+            "intra_hb1": min(hba[0], hbd[0]),
+            "intra_hb2": min(hba[1], hbd[1]),
+            "inter_hb": min(hba[0], hbd[1]) + min(hbd[0], hba[1]),
+        }
+        data = BinaryActivityCollator()([sample])
+        out = self.model.predict(data)
+        return self.post_process(out)
+
     def from_molecule(self, molecule_data, molecule_format):
         """Predict properties from molecular data.
 
@@ -321,6 +353,24 @@ if __name__ == "__main__":
         help="Path to the XYZ file whose molecular properties you want to predict.",
     )
     argparse.add_argument(
+        "--smiles1",
+        type=str,
+        default=None,
+        help="SMILES string for the first binary-mixture component.",
+    )
+    argparse.add_argument(
+        "--smiles2",
+        type=str,
+        default=None,
+        help="SMILES string for the second binary-mixture component.",
+    )
+    argparse.add_argument(
+        "--x1",
+        type=float,
+        default=None,
+        help="Mole fraction of the first binary-mixture component.",
+    )
+    argparse.add_argument(
         "--save_path",
         type=str,
         default="result.csv",
@@ -335,13 +385,18 @@ if __name__ == "__main__":
         checkpoint_path=args.checkpoint_path,
     )
 
-    if args.xyz_file_path is not None:
+    if args.smiles1 is not None or args.smiles2 is not None or args.x1 is not None:
+        if args.smiles1 is None or args.smiles2 is None or args.x1 is None:
+            raise ValueError("Provide --smiles1, --smiles2, and --x1 together.")
+        results = predictor.from_binary_mixture(args.smiles1, args.smiles2, args.x1)
+    elif args.xyz_file_path is not None:
         results = predictor.from_xyz_file(args.xyz_file_path, args.save_path)
     elif args.cif_file_path is not None:
         results = predictor.from_cif_file(args.cif_file_path, args.save_path)
     else:
         raise ValueError(
-            "Provide --xyz_file_path for molecular prediction, "
-            "or --cif_file_path for crystal prediction."
+            "Provide --smiles1/--smiles2/--x1 for binary-mixture prediction, "
+            "--xyz_file_path for molecular prediction, or --cif_file_path for "
+            "crystal prediction."
         )
     print(results)
