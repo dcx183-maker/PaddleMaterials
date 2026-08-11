@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const homepageDir = path.join(__dirname, '..', 'docs');
 const html = readFileSync(path.join(homepageDir, 'index.html'), 'utf8');
+const readme = readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
 const script = readFileSync(path.join(homepageDir, 'script.js'), 'utf8');
 
 const trainCommand = 'python property_prediction/train.py -c property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml';
@@ -74,12 +75,20 @@ test('all documented task datasets are represented on capability cards', () => {
 
 test('quickstart uses complete README training and inference commands', () => {
   assert.ok(html.includes(trainCommand), 'initial training command is incomplete');
-  assert.ok(script.includes(trainCommand), 'training tab command is incomplete');
-  for (const fragment of predictFragments) {
+  const inferenceCommand = "python property_prediction/predict.py --model_name='megnet_mp2018_train_60k_e_form' --weights_name='best.pdparams' --cif_file_path='./property_prediction/example_data/cifs/' --save_path='result.csv'";
+  assert.ok(script.includes(inferenceCommand), 'inference command should be represented as one copyable line');
+  for (const fragment of [
+    'property_prediction/predict.py',
+    "--model_name='megnet_mp2018_train_60k_e_form'",
+    "--weights_name='best.pdparams'",
+    "--cif_file_path='./property_prediction/example_data/cifs/'",
+    "--save_path='result.csv'",
+  ]) {
     assert.ok(script.includes(fragment), `missing inference command fragment: ${fragment}`);
   }
   assert.doesNotMatch(script, /command\.slice\(6\)/, 'command rendering must not rely on slicing a multiline command');
-  assert.match(script, /html: String\.raw`<span class=\"token-purple\">python<\/span> property_prediction\/predict\.py/, 'inference display must preserve README line continuations');
+  assert.doesNotMatch(script, /property_prediction\/predict\.py\s*\\\s*\n/, 'inference display should not split the command with line continuations');
+  assert.match(script, /html: String\.raw`<span class=\"token-purple\">python<\/span> property_prediction\/predict\.py/, 'inference display should keep syntax highlighting');
 });
 
 
@@ -93,4 +102,12 @@ test('GitHub Pages homepage is published from docs without a separate assets dir
   assert.match(publishedHtml, /src="\.\/materials-discovery-loop\.png"/);
   assert.doesNotMatch(publishedHtml, /(?:src|href)="\.\/assets\//);
   assert.equal(existsSync(path.join(__dirname, '..', 'homepage', 'assets')), false, 'homepage/assets should be removed');
+});
+
+
+test('README links to the published homepage badge', () => {
+  assert.match(
+    readme,
+    /<a href="https:\/\/paddlepaddle\.github\.io\/PaddleMaterials\/">\s*<img alt="Homepage" src="https:\/\/img\.shields\.io\/badge\/Homepage-PaddleMaterials-[^"]+">\s*<\/a>/,
+  );
 });
