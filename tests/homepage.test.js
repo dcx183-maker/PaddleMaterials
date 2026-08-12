@@ -17,12 +17,15 @@ const predictFragments = [
   "--save_path='result.csv'",
 ];
 
-test('platform signals include Predictor and Chinese experiment copy', () => {
+test('platform signals use the approved Chinese copy', () => {
   assert.match(html, /<div class="eyebrow"><span class="status-dot"><\/span> Open-source AI infrastructure for materials science\.<\/div>/);
   assert.doesNotMatch(html, /OPEN-SOURCE MATERIALS AI/);
-  assert.match(html, /Model · Dataset · Trainer · Predictor/);
-  assert.match(html, /<small>配置驱动实验<\/small>/);
+  assert.match(html, /<small>预置模型权重和数据集<\/small>/);
   assert.doesNotMatch(html, /Config-driven experiments/);
+  assert.match(html, /连接材料结构、性质、电子结构、谱图与模拟/);
+  assert.doesNotMatch(html, /连接材料结构、性质、电子态、光谱与模拟/);
+  assert.match(html, /<div class="hero-note"><span class="spark">✦<\/span> 从结构到性质，从预测到表征，把研究流程交给模型。<\/div>/);
+  assert.doesNotMatch(html, /从结构到性质，从实验到预测，把研究流程交给模型。/);
 });
 
 test('workflow uses the approved six-step Chinese copy', () => {
@@ -66,11 +69,15 @@ test('all documented task datasets are represented on capability cards', () => {
     'QM9_EC',
     'OMol25_EC',
     'MSD-NMR',
-    'n&lt;15 / 20 / 25 / 35',
     'HAADF STEM',
     'BF STEM',
   ];
   for (const label of labels) assert.ok(html.includes(label), `missing dataset label: ${label}`);
+  assert.match(html, /<h3>机器学习原子间势函数<\/h3>/);
+  assert.doesNotMatch(html, /机器学习原子势/);
+  assert.match(html, /<h3>属性预测<\/h3>[\s\S]*?<span>SphereNet<\/span>/);
+  assert.match(html, /<h3>机器学习原子间势函数<\/h3>[\s\S]*?<span>SphereNet<\/span>/);
+  assert.doesNotMatch(html, /n&lt;15 \/ 20 \/ 25 \/ 35/);
 });
 
 test('quickstart uses complete README training and inference commands', () => {
