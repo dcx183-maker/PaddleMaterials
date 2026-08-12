@@ -69,11 +69,15 @@ test('all documented task datasets are represented on capability cards', () => {
     'QM9_EC',
     'OMol25_EC',
     'MSD-NMR',
-    'n&lt;15 / 20 / 25 / 35',
     'HAADF STEM',
     'BF STEM',
   ];
   for (const label of labels) assert.ok(html.includes(label), `missing dataset label: ${label}`);
+  assert.match(html, /<h3>机器学习原子间势函数<\/h3>/);
+  assert.doesNotMatch(html, /机器学习原子势/);
+  assert.match(html, /<h3>属性预测<\/h3>[\s\S]*?<span>SphereNet<\/span>/);
+  assert.match(html, /<h3>机器学习原子间势函数<\/h3>[\s\S]*?<span>SphereNet<\/span>/);
+  assert.doesNotMatch(html, /n&lt;15 \/ 20 \/ 25 \/ 35/);
 });
 
 test('quickstart uses complete README training and inference commands', () => {
