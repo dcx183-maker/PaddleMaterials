@@ -15,7 +15,7 @@ from ppmat.datasets.gegnn_dataset import _canonical_atom_feats
 from ppmat.datasets.gegnn_dataset import smiles_to_pgl_graph
 from ppmat.models import build_model
 from ppmat.models.gegnn import GEGNNBinary
-from property_prediction.predict import PropertyPredictor
+from ppmat.predictor import PropertyPredictor
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -187,6 +187,7 @@ class TestGEGNNBinary(unittest.TestCase):
         predictor = object.__new__(PropertyPredictor)
         predictor.model = model
         predictor.post_process = lambda output: output
+        predictor.eval_with_no_grad = False
 
         output = predictor.from_binary_mixture("CCO", "O", 0.5)
 
