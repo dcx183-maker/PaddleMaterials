@@ -37,7 +37,6 @@ from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.gegnn import GEGNNBinary
 from ppmat.models.infgcn.infgcn import InfGCN
-from ppmat.models.mateno.mateno import MatENO
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
@@ -74,7 +73,6 @@ __all__ = [
     "DiffNMR",
     "GEGNNBinary",
     "InfGCN",
-    "MatENO",
     "SFIN",
     "SphereNet",
 ]
