@@ -9,10 +9,12 @@ from omegaconf import OmegaConf
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
-from ppmat.datasets.gegnn_dataset import BinaryActivityCollator
+from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
+from ppmat.datasets.gegnn_dataset import _MOLECULAR_GRAPH_CFG
 from ppmat.datasets.gegnn_dataset import _canonical_atom_feats
-from ppmat.datasets.gegnn_dataset import smiles_to_pgl_graph
+from ppmat.datasets.gegnn_dataset import build_molecular_graph
+from ppmat.models import build_graph_converter
 from ppmat.models import build_model
 from ppmat.models.gegnn import GEGNNBinary
 from ppmat.predictor import PropertyPredictor
@@ -31,7 +33,9 @@ class TestGEGNNBinary(unittest.TestCase):
             hbd = rdMolDescriptors.CalcNumHBD(mol)
             solvent_features.append(
                 {
-                    "graph": smiles_to_pgl_graph(smiles, add_self_loop=True),
+                    "graph": build_molecular_graph(
+                        mol, build_graph_converter(_MOLECULAR_GRAPH_CFG)
+                    ),
                     "hba": hba,
                     "hbd": hbd,
                     "intra_hb": min(hba, hbd),
@@ -58,7 +62,7 @@ class TestGEGNNBinary(unittest.TestCase):
             cls._synthetic_sample(composition, gamma)
             for composition, gamma in ((0.25, [0.10, -0.05]), (0.75, [0.20, 0.15]))
         ]
-        return BinaryActivityCollator()(samples)
+        return DefaultCollator()(samples)
 
     @staticmethod
     def _new_model():
@@ -82,7 +86,7 @@ class TestGEGNNBinary(unittest.TestCase):
         )
 
     def test_label_free_collation_for_prediction(self):
-        batch = BinaryActivityCollator()([self._synthetic_sample(0.5)])
+        batch = DefaultCollator()([self._synthetic_sample(0.5)])
 
         self.assertNotIn("gamma", batch)
         prediction = self._new_model().predict(batch)
@@ -231,7 +235,7 @@ class TestGEGNNBinary(unittest.TestCase):
             OmegaConf.to_container(config, resolve=False)["Dataset"]["train"][
                 "dataset"
             ]["__init_params__"]["path"],
-            "${oc.env:PPMAT_DATA_PATH,./data/binary_activity/output_binary_with_inf_all.csv}",
+            "./data/binary_activity/output_binary_with_inf_all.csv",
         )
         self.assertNotIn("collate_params", config.Dataset["train"]["loader"])
 
@@ -317,8 +321,11 @@ class TestAtomFeaturization(unittest.TestCase):
         self.assertEqual(feats.shape[0], 74)
         self.assertEqual(feats.dtype, np.float32)
 
-    def test_smiles_to_pgl_graph(self):
-        graph = smiles_to_pgl_graph("CCO")
+    def test_molecular_graph_converter(self):
+        mol = Chem.MolFromSmiles("CCO")
+        graph = build_molecular_graph(
+            mol, build_graph_converter(_MOLECULAR_GRAPH_CFG)
+        )
         self.assertIsNotNone(graph)
         self.assertEqual(graph.num_nodes, 3)
         self.assertIn("h", graph.node_feat)

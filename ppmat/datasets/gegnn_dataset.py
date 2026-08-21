@@ -14,6 +14,7 @@
 
 import os
 import os.path as osp
+import pickle
 from typing import Optional
 
 import numpy as np
@@ -25,10 +26,11 @@ from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.models import build_graph_converter
 from ppmat.utils import download
 from ppmat.utils import logger
 
-__all__ = ["BinaryActivityDataset", "BinaryActivityCollator"]
+__all__ = ["BinaryActivityDataset"]
 
 _ALLOWABLE_ATOM_TYPES = [
     "C",
@@ -106,48 +108,51 @@ def _canonical_atom_feats(atom):
     return np.array(feats, dtype=np.float32)
 
 
+_DATA_FILE = "output_binary_with_inf_all.csv"
+_SOLVENT_FILE = "solvent_list.csv"
 _DATA_URL = (
     "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
     "thermodynamic_data_of_binary_mixtures/"
 )
-_DATA_FILE = "output_binary_with_inf_all.csv"
-_SOLVENT_FILE = "solvent_list.csv"
 
 
-def smiles_to_pgl_graph(smiles, add_self_loop=True):
-    """Build a molecular graph with the shared ``BuildMolecule`` factory."""
-    mol = BuildMolecule(format="smiles")(smiles)
-    if mol is None:
-        logger.warning(f"Invalid SMILES: {smiles}")
+_MOLECULAR_GRAPH_VOCAB = {
+    "atom": {
+        "token_to_id": {
+            symbol: index for index, symbol in enumerate(_ALLOWABLE_ATOM_TYPES)
+        },
+        "num_embeddings": len(_ALLOWABLE_ATOM_TYPES),
+    },
+    "bond": {
+        "token_to_id": {
+            "NO_BOND": 0,
+            "SINGLE": 1,
+            "DOUBLE": 2,
+            "TRIPLE": 3,
+            "AROMATIC": 4,
+        },
+        "num_embeddings": 5,
+    },
+}
+
+_MOLECULAR_GRAPH_CFG = {
+    "__class_name__": "MolecularGraphConverter",
+    "__init_params__": {
+        "vocab": _MOLECULAR_GRAPH_VOCAB,
+        "remove_h": False,
+        "add_self_loops": True,
+        "edge_mode": "bidirectional",
+    },
+}
+
+
+def build_molecular_graph(mol, converter):
+    graph = converter(mol)
+    if graph is None:
         return None
-
-    num_atoms = mol.GetNumAtoms()
-
-    src_list = []
-    dst_list = []
-    num_bonds = mol.GetNumBonds()
-    for i in range(num_bonds):
-        bond = mol.GetBondWithIdx(i)
-        u = bond.GetBeginAtomIdx()
-        v = bond.GetEndAtomIdx()
-        src_list.extend([u, v])
-        dst_list.extend([v, u])
-
-    if add_self_loop:
-        for i in range(num_atoms):
-            src_list.append(i)
-            dst_list.append(i)
-
-    node_feat = np.stack(
-        [_canonical_atom_feats(mol.GetAtomWithIdx(i)) for i in range(num_atoms)],
+    graph.node_feat["h"] = np.stack(
+        [_canonical_atom_feats(mol.GetAtomWithIdx(i)) for i in range(mol.GetNumAtoms())],
         axis=0,
-    )
-
-    edges = np.array(list(zip(src_list, dst_list)), dtype=np.int64)
-    graph = pgl.Graph(
-        num_nodes=num_atoms,
-        edges=edges,
-        node_feat={"h": node_feat},
     )
     return graph
 
@@ -208,42 +213,43 @@ class BinaryActivityDataset(Dataset):
         fold: int = 0,
         num_folds: int = 5,
         seed: int = 2021,
+        cache_path: Optional[str] = None,
+        overwrite: bool = False,
         **kwargs,
     ):
         super().__init__()
         del kwargs
-        self.solvent_data = {}
         self.build_molecule = BuildMolecule(format="smiles")
+        self.graph_converter = build_graph_converter(_MOLECULAR_GRAPH_CFG)
 
         path, solvent_list_path = self._resolve_data_paths(path, solvent_list_path)
 
         self.path = path
         self.solvent_list_path = solvent_list_path
-        if osp.exists(path):
-            solvent_list = pd.read_csv(solvent_list_path, index_col="solvent_id")
-            self.dataset = pd.read_csv(path, low_memory=False)
-            self._validate_dataset_columns()
-            self.dataset = self._apply_split(
-                split_mode=split_mode,
-                split_part=split_part,
-                fold=fold,
-                num_folds=num_folds,
-                seed=seed,
-            )
-            self.solvent_smiles = solvent_list["smiles_can"].to_dict()
-        else:
-            if split_mode != "all" or split_part != "all":
-                raise FileNotFoundError(
-                    f"Binary-mixture CSV is unavailable: {path}"
-                )
-            self.dataset = pd.DataFrame()
-            self.solvent_smiles = {}
+        if not osp.exists(path):
+            raise FileNotFoundError(f"Binary-mixture CSV is unavailable: {path}")
+        solvent_list = pd.read_csv(solvent_list_path, index_col="solvent_id")
+        self.dataset = pd.read_csv(path, low_memory=False)
+        self._validate_dataset_columns()
+        self.dataset = self._apply_split(
+            split_mode=split_mode,
+            split_part=split_part,
+            fold=fold,
+            num_folds=num_folds,
+            seed=seed,
+        )
+        self.solvent_smiles = solvent_list["smiles_can"].to_dict()
 
         self.split_mode = split_mode
         self.split_part = split_part
         self.fold = fold
         self.num_folds = num_folds
         self.seed = seed
+        self.overwrite = overwrite
+        self.cache_path = cache_path or osp.join(
+            osp.split(path)[0] + "_cache", osp.splitext(osp.basename(path))[0]
+        )
+        self.solvent_data = self._load_or_build_cache()
         logger.info(
             f"Load {len(self.dataset)} binary-mixture samples from {path}"
         )
@@ -347,6 +353,61 @@ class BinaryActivityDataset(Dataset):
             dtype=np.int64,
         )
 
+    def _load_or_build_cache(self):
+        config_path = osp.join(self.cache_path, "build_graph_cfg.pkl")
+        graph_cache_path = osp.join(self.cache_path, "graphs")
+        config = {
+            "solvent_list_path": osp.abspath(self.solvent_list_path),
+            "feature_dim": 74,
+            "add_self_loops": True,
+            "remove_h": False,
+        }
+        cache_exists = osp.exists(config_path) and osp.isdir(graph_cache_path)
+        if cache_exists and not self.overwrite:
+            cached_config = self._load_from_cache(config_path)
+            if cached_config != config:
+                raise ValueError(
+                    "Cached molecular graph configuration does not match the current "
+                    "dataset. Set overwrite=True or use a different cache_path."
+                )
+            return {
+                solvent_id: osp.join(graph_cache_path, f"{solvent_id}.pkl")
+                for solvent_id in self.solvent_smiles
+            }
+
+        os.makedirs(graph_cache_path, exist_ok=True)
+        self._save_to_cache(config_path, config)
+        solvent_data = {}
+        for solvent_id, smiles in self.solvent_smiles.items():
+            cache_file = osp.join(graph_cache_path, f"{solvent_id}.pkl")
+            self._save_to_cache(cache_file, self._build_solvent(solvent_id, smiles))
+            solvent_data[solvent_id] = cache_file
+        return solvent_data
+
+    @staticmethod
+    def _save_to_cache(path, data):
+        with open(path, "wb") as file:
+            pickle.dump(data, file)
+
+    @staticmethod
+    def _load_from_cache(path):
+        with open(path, "rb") as file:
+            return pickle.load(file)
+
+    def _build_solvent(self, solvent_id, smiles):
+        mol = self.build_molecule(smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES for solvent {solvent_id}: {smiles}")
+        graph = build_molecular_graph(mol, self.graph_converter)
+        hba = rdMolDescriptors.CalcNumHBA(mol)
+        hbd = rdMolDescriptors.CalcNumHBD(mol)
+        return {
+            "graph": graph,
+            "hba": hba,
+            "hbd": hbd,
+            "intra_hb": min(hba, hbd),
+        }
+
     def __len__(self):
         return len(self.dataset)
 
@@ -356,13 +417,8 @@ class BinaryActivityDataset(Dataset):
 
         data = self.dataset.iloc[idx]
         ids = [data["solv1"], data["solv2"]]
-
-        for sid in ids:
-            if sid not in self.solvent_data:
-                self._generate_solvent(sid)
-
-        solv1 = self.solvent_data[ids[0]]
-        solv2 = self.solvent_data[ids[1]]
+        solv1 = self._load_from_cache(self.solvent_data[ids[0]])
+        solv2 = self._load_from_cache(self.solvent_data[ids[1]])
 
         sample = {
             "g1": solv1["graph"],
@@ -375,25 +431,9 @@ class BinaryActivityDataset(Dataset):
             "intra_hb2": solv2["intra_hb"],
             "inter_hb": min(solv1["hba"], solv2["hbd"])
             + min(solv1["hbd"], solv2["hba"]),
+            "empty_solvsys": self.generate_solvsys(1),
         }
         return sample
-
-    def _generate_solvent(self, solvent_id):
-        smiles = self.solvent_smiles[solvent_id]
-        mol = self.build_molecule(smiles)
-        if mol is None:
-            raise ValueError(f"Invalid SMILES for solvent {solvent_id}: {smiles}")
-
-        graph = smiles_to_pgl_graph(smiles, add_self_loop=True)
-        hba = rdMolDescriptors.CalcNumHBA(mol)
-        hbd = rdMolDescriptors.CalcNumHBD(mol)
-
-        self.solvent_data[solvent_id] = {
-            "graph": graph,
-            "hba": hba,
-            "hbd": hbd,
-            "intra_hb": min(hba, hbd),
-        }
 
     @staticmethod
     def generate_solvsys(batch_size=5):
@@ -420,48 +460,3 @@ class BinaryActivityDataset(Dataset):
             edges=edges,
         )
         return graph
-
-
-
-class BinaryActivityCollator(object):
-    """Batch binary activity-coefficient samples for the GE-GNN model."""
-
-    def __init__(self):
-        pass
-
-    def __call__(self, batch):
-        if not batch:
-            raise ValueError("Cannot collate an empty batch")
-
-        batched_g1 = pgl.Graph.batch([sample["g1"] for sample in batch])
-        batched_g2 = pgl.Graph.batch([sample["g2"] for sample in batch])
-        for graph in (batched_g1, batched_g2):
-            for key, value in graph.node_feat.items():
-                if not isinstance(value, paddle.Tensor):
-                    graph.node_feat[key] = paddle.to_tensor(value, dtype="float32")
-
-        batched_sample = {
-            "g1": batched_g1,
-            "g2": batched_g2,
-            "empty_solvsys": BinaryActivityDataset.generate_solvsys(len(batch)),
-        }
-        float_keys = (
-            "x1",
-            "x2",
-            "intra_hb1",
-            "intra_hb2",
-            "inter_hb",
-        )
-        if all("gamma1" in sample and "gamma2" in sample for sample in batch):
-            float_keys += ("gamma1", "gamma2")
-        for key in float_keys:
-            values = np.asarray([sample[key] for sample in batch], dtype=np.float32)
-            batched_sample[key] = paddle.to_tensor(
-                values.reshape(-1, 1), dtype="float32"
-            )
-
-        if "gamma1" in batched_sample:
-            batched_sample["gamma"] = paddle.concat(
-                [batched_sample["gamma1"], batched_sample["gamma2"]], axis=1
-            )
-        return batched_sample

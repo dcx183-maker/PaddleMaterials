@@ -91,16 +91,20 @@ class PropertyPredictor(BasePredictor):
         """Predict binary-mixture activity coefficients from two SMILES strings."""
         from rdkit.Chem import rdMolDescriptors
 
-        from ppmat.datasets.gegnn_dataset import BinaryActivityCollator
-        from ppmat.datasets.gegnn_dataset import smiles_to_pgl_graph
+        from ppmat.datasets.collate_fn import DefaultCollator
+        from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
+        from ppmat.datasets.gegnn_dataset import _MOLECULAR_GRAPH_CFG
+        from ppmat.datasets.gegnn_dataset import build_molecular_graph
+        from ppmat.models import build_graph_converter
 
         x1 = float(x1)
         if not 0.0 <= x1 <= 1.0:
             raise ValueError("x1 must be in the interval [0, 1].")
-        graphs = [smiles_to_pgl_graph(smiles) for smiles in (smiles1, smiles2)]
-        if any(graph is None for graph in graphs):
-            raise ValueError("Both mixture components must be valid SMILES strings.")
         molecules = [BuildMolecule(format="smiles")(smiles) for smiles in (smiles1, smiles2)]
+        if any(molecule is None for molecule in molecules):
+            raise ValueError("Both mixture components must be valid SMILES strings.")
+        converter = build_graph_converter(_MOLECULAR_GRAPH_CFG)
+        graphs = [build_molecular_graph(molecule, converter) for molecule in molecules]
         hba = [rdMolDescriptors.CalcNumHBA(mol) for mol in molecules]
         hbd = [rdMolDescriptors.CalcNumHBD(mol) for mol in molecules]
         sample = {
@@ -112,7 +116,8 @@ class PropertyPredictor(BasePredictor):
             "intra_hb2": min(hba[1], hbd[1]),
             "inter_hb": min(hba[0], hbd[1]) + min(hbd[0], hba[1]),
         }
-        return self._run_model(BinaryActivityCollator()([sample]))
+        sample["empty_solvsys"] = BinaryActivityDataset.generate_solvsys(1)
+        return self._run_model(DefaultCollator()([sample]))
 
     def from_cif_file(self, cif_file_path, save_path=None):
         if save_path is not None:

@@ -25,7 +25,8 @@ GE-GNN uses binary-mixture activity-coefficient data and solvent metadata:
 | binaryGamma | `output_binary_with_inf_all.csv`, `solvent_list.csv` | [AI Studio GE-GNN model space](https://aistudio.baidu.com/modelsdetail/49433?modelId=49433) or [PaddleMaterials dataset storage](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/thermodynamic_data_of_binary_mixtures/) |
 
 The AI Studio model space stores the same required CSV files with the following
-names. Download and rename them before training with a local `PPMAT_DATA_PATH`:
+names. Download and place them at the dataset path configured in
+`gegnn_binary_activity.yaml`:
 
 | AI Studio file | Local file name |
 | --- | --- |
@@ -38,8 +39,8 @@ training configuration.
 
 `BinaryActivityDataset` follows the PaddleMaterials `path` convention. When the CSV is missing, it downloads the data CSV to the shared PaddleMaterials dataset cache (`~/.paddlemat/datasets`) and reads its sibling `solvent_list.csv` from that cache. To use an existing local copy, set:
 
-```bash
-export PPMAT_DATA_PATH=./data/binary_activity/output_binary_with_inf_all.csv
+```text
+./data/binary_activity/output_binary_with_inf_all.csv
 ```
 
 The default configuration uses the upstream `comp_inter` protocol: 5-fold TPSA-stratified cross validation with seed `2021`. Use the same `fold` value from `0` to `4` for both the training and validation datasets.

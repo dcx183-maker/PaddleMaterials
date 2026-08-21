@@ -19,6 +19,8 @@ __all__ = [
     "FieldPredictor",
     "PotentialPredictor",
     "PropertyPredictor",
+    "GEGNNPredictor",
+    "LiFlowPredictor",
     "SpectrumPredictor",
 ]
 
@@ -36,6 +38,14 @@ def __getattr__(name):
         from ppmat.predictor.property_predictor import PropertyPredictor
 
         predictor_class = PropertyPredictor
+    elif name == "GEGNNPredictor":
+        from ppmat.predictor.gegnn_predictor import GEGNNPredictor
+
+        predictor_class = GEGNNPredictor
+    elif name == "LiFlowPredictor":
+        from ppmat.predictor.liflow_predictor import LiFlowPredictor
+
+        predictor_class = LiFlowPredictor
     elif name == "SpectrumPredictor":
         from ppmat.predictor.spectrum_predictor import SpectrumPredictor
 

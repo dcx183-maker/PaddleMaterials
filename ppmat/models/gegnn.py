@@ -236,6 +236,8 @@ class GEGNNBinary(paddle.nn.Layer):
 
     @staticmethod
     def _as_column(value):
+        if not isinstance(value, paddle.Tensor):
+            value = paddle.to_tensor(value)
         value = paddle.cast(value, "float32")
         return value.unsqueeze(1) if value.ndim == 1 else value
 
@@ -375,13 +377,19 @@ class GEGNNBinary(paddle.nn.Layer):
         prediction = self.activity_coefficients(excess_gibbs_energy, x1, derivative)
         return excess_gibbs_energy, derivative, prediction
 
+    def _forward(self, data, create_graph=False):
+        if create_graph:
+            return self._predict_with_derivative(data, create_graph=True)
+        return self._predict_head_gradient(data)
+
     def forward(self, data, return_loss=True, return_prediction=True):
+        assert return_loss or return_prediction
         if self.training and return_loss:
-            excess_gibbs_energy, derivative, output = self._predict_with_derivative(
+            excess_gibbs_energy, derivative, output = self._forward(
                 data, create_graph=True
             )
         else:
-            excess_gibbs_energy, derivative, output = self._predict_head_gradient(data)
+            excess_gibbs_energy, derivative, output = self._forward(data)
         loss_dict = {}
         if return_loss:
             labels = paddle.concat(
