@@ -77,16 +77,22 @@ Keep `Trainer.eval_with_no_grad=False` because GE-GNN needs $dG^E/dx_1$ to calcu
 
 ## Prediction
 
-```bash
-python property_prediction/predict.py \
-  --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml \
-  --checkpoint_path=./output/gegnn_binary_gamma/checkpoints/gegnn_binary_gamma_fold0_best.pdparams \
-  --smiles1=CCO \
-  --smiles2=O \
-  --x1=0.5
+```python
+from ppmat.predictor import PropertyPredictor
+
+predictor = PropertyPredictor(
+    config_path="property_prediction/configs/gegnn/gegnn_binary_activity.yaml",
+    checkpoint_path=(
+        "./output/gegnn_binary_gamma/checkpoints/"
+        "gegnn_binary_gamma_fold0_best.pdparams"
+    ),
+)
+result = predictor.from_mixture("CCO", "O", 0.5)
 ```
 
-`smiles1` and `smiles2` are the two solvent components; `x1` is the mole fraction of `smiles1` and must be in the interval $[0, 1]$.
+`from_mixture` accepts the two component SMILES strings and the mole fraction
+`x1` of the first component. It uses the standard `DefaultCollator` and is kept
+separate from the general CIF/XYZ prediction CLI.
 
 ## Verification
 

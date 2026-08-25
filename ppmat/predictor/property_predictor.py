@@ -85,36 +85,28 @@ class PropertyPredictor(BasePredictor):
         data = self.graph_converter(structures)
         return self._run_model(data)
 
-    def from_binary_mixture(self, smiles1, smiles2, x1):
-        """Predict binary-mixture activity coefficients from two SMILES strings."""
-        from rdkit.Chem import rdMolDescriptors
-
+    def from_mixture(self, smiles1, smiles2, x1):
+        """Predict a binary mixture from two SMILES strings and ``x1``."""
         from ppmat.datasets.collate_fn import DefaultCollator
-        from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
         from ppmat.datasets.gegnn_dataset import _MOLECULAR_GRAPH_CFG
-        from ppmat.datasets.gegnn_dataset import build_molecular_graph
+        from ppmat.datasets.gegnn_dataset import build_mixture_sample
         from ppmat.models import build_graph_converter
 
         x1 = float(x1)
         if not 0.0 <= x1 <= 1.0:
             raise ValueError("x1 must be in the interval [0, 1].")
-        molecules = [BuildMolecule(format="smiles")(smiles) for smiles in (smiles1, smiles2)]
+
+        build_molecule = BuildMolecule(format="smiles")
+        molecules = [build_molecule(smiles) for smiles in (smiles1, smiles2)]
         if any(molecule is None for molecule in molecules):
             raise ValueError("Both mixture components must be valid SMILES strings.")
-        converter = build_graph_converter(_MOLECULAR_GRAPH_CFG)
-        graphs = [build_molecular_graph(molecule, converter) for molecule in molecules]
-        hba = [rdMolDescriptors.CalcNumHBA(mol) for mol in molecules]
-        hbd = [rdMolDescriptors.CalcNumHBD(mol) for mol in molecules]
-        sample = {
-            "g1": graphs[0],
-            "g2": graphs[1],
-            "x1": x1,
-            "x2": 1.0 - x1,
-            "intra_hb1": min(hba[0], hbd[0]),
-            "intra_hb2": min(hba[1], hbd[1]),
-            "inter_hb": min(hba[0], hbd[1]) + min(hbd[0], hba[1]),
-            "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
-        }
+
+        sample = build_mixture_sample(
+            molecules[0],
+            molecules[1],
+            x1,
+            build_graph_converter(_MOLECULAR_GRAPH_CFG),
+        )
         return self._run_model(DefaultCollator()([sample]))
 
     def from_molecule(self, molecule):

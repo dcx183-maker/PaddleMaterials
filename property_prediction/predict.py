@@ -38,10 +38,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--cif_file_path", help=argparse.SUPPRESS)
     parser.add_argument("--xyz_file_path", help=argparse.SUPPRESS)
-    parser.add_argument("--smiles1", help="SMILES string for the first mixture component.")
-    parser.add_argument("--smiles2", help="SMILES string for the second mixture component.")
-    parser.add_argument("--x1", type=float, help="Mole fraction of the first mixture component.")
-    parser.add_argument("--output_path", default="results", help="Directory used to save result.csv.")
+    parser.add_argument(
+        "--output_path",
+        default="results",
+        help="Directory used to save result.csv.",
+    )
     parser.add_argument("--save_path", help=argparse.SUPPRESS)
     args, config_overrides = parser.parse_known_args(argv)
     if args.model_name is not None and args.checkpoint_path is not None:
@@ -51,14 +52,6 @@ def parse_args(argv=None):
     if any(value.startswith("-") or "=" not in value for value in config_overrides):
         parser.error("unrecognized arguments: " + " ".join(config_overrides))
 
-    mixture_args = (args.smiles1, args.smiles2, args.x1)
-    if any(value is not None for value in mixture_args):
-        if not all(value is not None for value in mixture_args):
-            parser.error("Provide --smiles1, --smiles2, and --x1 together.")
-        if args.input_path or args.input_format or args.cif_file_path or args.xyz_file_path:
-            parser.error("Mixture inputs cannot be combined with file inputs.")
-        return args, config_overrides
-
     input_path = args.input_path or args.cif_file_path or args.xyz_file_path
     input_format = args.input_format
     if input_format is None:
@@ -66,7 +59,7 @@ def parse_args(argv=None):
             parser.error("CIF and XYZ inputs are mutually exclusive.")
         input_format = "cif" if args.cif_file_path else "xyz"
     if input_path is None:
-        parser.error("Provide CIF, XYZ, or binary-mixture inputs.")
+        parser.error("Provide a CIF or XYZ input.")
     args.input_path = input_path
     args.input_format = input_format
     return args, config_overrides
@@ -82,15 +75,12 @@ def main():
         device=args.device,
         config_overrides=config_overrides,
     )
-    if args.smiles1 is not None:
-        results = predictor.from_binary_mixture(args.smiles1, args.smiles2, args.x1)
+    os.makedirs(args.output_path, exist_ok=True)
+    save_path = args.save_path or osp.join(args.output_path, "result.csv")
+    if args.input_format == "xyz":
+        results = predictor.from_xyz_file(args.input_path, save_path)
     else:
-        os.makedirs(args.output_path, exist_ok=True)
-        save_path = args.save_path or osp.join(args.output_path, "result.csv")
-        if args.input_format == "xyz":
-            results = predictor.from_xyz_file(args.input_path, save_path)
-        else:
-            results = predictor.from_cif_file(args.input_path, save_path)
+        results = predictor.from_cif_file(args.input_path, save_path)
     print(results)
 
 

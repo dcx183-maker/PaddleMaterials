@@ -51,6 +51,7 @@ class TestGEGNNBinary(unittest.TestCase):
             "intra_hb2": solv2["intra_hb"],
             "inter_hb": min(solv1["hba"], solv2["hbd"])
             + min(solv1["hbd"], solv2["hba"]),
+            "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
         }
         if gamma is not None:
             sample["gamma1"], sample["gamma2"] = gamma
@@ -193,11 +194,11 @@ class TestGEGNNBinary(unittest.TestCase):
         predictor.post_process = lambda output: output
         predictor.eval_with_no_grad = False
 
-        output = predictor.from_binary_mixture("CCO", "O", 0.5)
+        output = predictor.from_mixture("CCO", "O", 0.5)
 
         self.assertEqual(output["gamma"].shape, [1, 2])
         with self.assertRaises(ValueError):
-            predictor.from_binary_mixture("CCO", "O", 1.1)
+            predictor.from_mixture("CCO", "O", 1.1)
 
     def test_gegnn_config_contract(self):
         config_path = os.path.join(
@@ -311,6 +312,33 @@ class TestBinaryActivitySplits(unittest.TestCase):
                     pair_partitions.setdefault(pair, set()).add(partition_index)
             self.assertTrue(pair_partitions)
             self.assertTrue(all(len(parts) == 1 for parts in pair_partitions.values()))
+
+    def test_cache_is_reused_for_different_splits(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            self._write_dataset(root_dir)
+            path = os.path.join(root_dir, "binary.csv")
+            solvent_list_path = os.path.join(root_dir, "solvent_list.csv")
+            train = BinaryActivityDataset(
+                path=path,
+                solvent_list_path=solvent_list_path,
+                split_mode="comp_inter",
+                split_part="train",
+                fold=0,
+                num_folds=2,
+            )
+            val = BinaryActivityDataset(
+                path=path,
+                solvent_list_path=solvent_list_path,
+                split_mode="comp_inter",
+                split_part="val",
+                fold=0,
+                num_folds=2,
+            )
+
+            self.assertEqual(train.cache_path, val.cache_path)
+            self.assertEqual(train.solvent_ids, val.solvent_ids)
+            self.assertTrue(os.path.exists(train.graphs[0]))
+            self.assertEqual(len(val), len(val.dataset))
 
 
 class TestAtomFeaturization(unittest.TestCase):
