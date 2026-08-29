@@ -34,6 +34,7 @@ from ppmat.utils.pgl_compat import patch_pgl_empty_edge_batch
 
 patch_pgl_empty_edge_batch()
 
+
 class DefaultCollator(object):
     def __call__(self, batch: List[Any]) -> Any:
         """Default_collate_fn for paddle dataloader.

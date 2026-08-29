@@ -16,25 +16,16 @@ from __future__ import annotations
 
 import paddle
 
+from ppmat.utils.scatter import scatter_mean
+from ppmat.utils.scatter import scatter_sum
+
 
 def _segment_sum(values, segment_ids, num_segments):
-    """Differentiable segment sum built from higher-order-safe primitives."""
-    if not isinstance(segment_ids, paddle.Tensor):
-        segment_ids = paddle.to_tensor(segment_ids, dtype="int64")
-    else:
-        segment_ids = paddle.cast(segment_ids, "int64")
-    assignment = paddle.nn.functional.one_hot(
-        segment_ids, num_classes=int(num_segments)
-    )
-    assignment = paddle.cast(assignment, values.dtype)
-    return paddle.matmul(assignment, values, transpose_x=True)
+    return scatter_sum(values, segment_ids, dim=0, dim_size=num_segments)
 
 
 def _segment_mean(values, segment_ids, num_segments):
-    totals = _segment_sum(values, segment_ids, num_segments)
-    ones = paddle.ones([values.shape[0], 1], dtype=values.dtype)
-    counts = _segment_sum(ones, segment_ids, num_segments)
-    return totals / paddle.clip(counts, min=1.0)
+    return scatter_mean(values, segment_ids, dim=0, dim_size=num_segments)
 
 
 class HigherOrderGraphConv(paddle.nn.Layer):

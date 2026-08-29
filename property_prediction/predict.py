@@ -21,6 +21,7 @@ from ppmat.predictor import PropertyPredictor
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Material property prediction")
+    # Select exactly one model source: a registered package or a local config.
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--model_name", help="Registered model name.")
     model_source.add_argument("--config_path", help="Path to a local config file.")
@@ -30,20 +31,18 @@ def parse_args(argv=None):
         help="Checkpoint path or URL; defaults to Predict.checkpoint_path in config.",
     )
     parser.add_argument("--device", help="Paddle device, for example cpu or gpu:0.")
-    parser.add_argument("--input_path", help="Input file or directory.")
+    parser.add_argument("--input_path", required=True, help="Input file or directory.")
     parser.add_argument(
         "--input_format",
+        required=True,
         choices=["cif", "xyz"],
-        help="Input file format for CIF or XYZ prediction.",
+        help="Input file format.",
     )
-    parser.add_argument("--cif_file_path", help=argparse.SUPPRESS)
-    parser.add_argument("--xyz_file_path", help=argparse.SUPPRESS)
     parser.add_argument(
         "--output_path",
         default="results",
         help="Directory used to save result.csv.",
     )
-    parser.add_argument("--save_path", help=argparse.SUPPRESS)
     args, config_overrides = parser.parse_known_args(argv)
     if args.model_name is not None and args.checkpoint_path is not None:
         parser.error("--checkpoint_path cannot be combined with --model_name")
@@ -51,17 +50,6 @@ def parse_args(argv=None):
         parser.error("--weights_name can only be used with --model_name")
     if any(value.startswith("-") or "=" not in value for value in config_overrides):
         parser.error("unrecognized arguments: " + " ".join(config_overrides))
-
-    input_path = args.input_path or args.cif_file_path or args.xyz_file_path
-    input_format = args.input_format
-    if input_format is None:
-        if args.cif_file_path and args.xyz_file_path:
-            parser.error("CIF and XYZ inputs are mutually exclusive.")
-        input_format = "cif" if args.cif_file_path else "xyz"
-    if input_path is None:
-        parser.error("Provide a CIF or XYZ input.")
-    args.input_path = input_path
-    args.input_format = input_format
     return args, config_overrides
 
 
@@ -76,7 +64,7 @@ def main():
         config_overrides=config_overrides,
     )
     os.makedirs(args.output_path, exist_ok=True)
-    save_path = args.save_path or osp.join(args.output_path, "result.csv")
+    save_path = osp.join(args.output_path, "result.csv")
     if args.input_format == "xyz":
         results = predictor.from_xyz_file(args.input_path, save_path)
     else:

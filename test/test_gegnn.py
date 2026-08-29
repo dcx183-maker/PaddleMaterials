@@ -194,11 +194,28 @@ class TestGEGNNBinary(unittest.TestCase):
         predictor.post_process = lambda output: output
         predictor.eval_with_no_grad = False
 
-        output = predictor.from_mixture("CCO", "O", 0.5)
+        components = []
+        for smiles in ("CCO", "O"):
+            molecule = Chem.MolFromSmiles(smiles)
+            hba = rdMolDescriptors.CalcNumHBA(molecule)
+            hbd = rdMolDescriptors.CalcNumHBD(molecule)
+            components.append(
+                {
+                    "graph": build_molecular_graph(
+                        molecule, build_graph_converter(_MOLECULAR_GRAPH_CFG)
+                    ),
+                    "hba": hba,
+                    "hbd": hbd,
+                    "intra_hb": min(hba, hbd),
+                    "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
+                }
+            )
+
+        output = predictor.from_mixture(components[0], components[1], 0.5)
 
         self.assertEqual(output["gamma"].shape, [1, 2])
         with self.assertRaises(ValueError):
-            predictor.from_mixture("CCO", "O", 1.1)
+            predictor.from_mixture(components[0], components[1], 1.1)
 
     def test_gegnn_config_contract(self):
         config_path = os.path.join(
@@ -269,11 +286,11 @@ class TestBinaryActivitySplits(unittest.TestCase):
         pd.DataFrame(records).to_csv(os.path.join(root_dir, "binary.csv"), index=False)
 
     def _dataset(self, root_dir, split_mode, split_part, fold=0):
-        return BinaryActivityDataset(
-            path=os.path.join(root_dir, "binary.csv"),
-            solvent_list_path=os.path.join(root_dir, "solvent_list.csv"),
-            split_mode=split_mode,
-            split_part=split_part,
+        data = pd.read_csv(os.path.join(root_dir, "binary.csv"))
+        return split_binary_activity_data(
+            data,
+            split_mode,
+            split_part,
             fold=fold,
             num_folds=2,
             seed=2021,
@@ -302,7 +319,7 @@ class TestBinaryActivitySplits(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root_dir:
             self._write_dataset(root_dir)
             partitions = [
-                self._dataset(root_dir, "system_extra", part).dataset
+                self._dataset(root_dir, "system_extra", part)
                 for part in ("train", "val")
             ]
             pair_partitions = {}

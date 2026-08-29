@@ -29,9 +29,8 @@ import pgl
 from paddle.io import Dataset
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
-from sklearn.model_selection import StratifiedKFold
-
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.split_gegnn_data import split_binary_activity_data
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
 from ppmat.utils import logger
@@ -216,7 +215,8 @@ class BinaryActivityDataset(Dataset):
 
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
-            path = download.get_datasets_path_from_url(self.url)
+            root_path = download.get_datasets_path_from_url(self.url)
+            path = osp.join(root_path, self.name, osp.basename(path))
         if solvent_list_path is None:
             solvent_list_path = osp.join(osp.dirname(path), _SOLVENT_FILE)
         if not osp.exists(solvent_list_path):
@@ -243,7 +243,8 @@ class BinaryActivityDataset(Dataset):
 
         self.cache_exists = True if osp.exists(self.cache_path) else False
         self.dataset = self.read_data(path)
-        self.dataset = self.apply_split(
+        self.dataset = split_binary_activity_data(
+            self.dataset,
             split_mode,
             split_part,
             fold,
@@ -291,60 +292,6 @@ class BinaryActivityDataset(Dataset):
             solvent_id: solvents.loc[solvent_id, "smiles_can"]
             for solvent_id in solvent_ids
         }
-
-    def apply_split(self, split_mode, split_part, fold, num_folds, seed):
-        """Apply the GE-GNN composition or system split."""
-        if split_mode == "all":
-            if split_part != "all":
-                raise ValueError(
-                    "split_part must be 'all' when split_mode is 'all'."
-                )
-            return self.dataset.reset_index(drop=True)
-
-        if split_mode not in {"comp_inter", "system_extra"}:
-            raise ValueError(f"Unsupported split_mode: {split_mode}")
-        if split_part not in {"train", "val"}:
-            raise ValueError(f"Unsupported split_part: {split_part}")
-        if "tpsa_binary_avg" not in self.dataset:
-            raise ValueError("Split requires the 'tpsa_binary_avg' column.")
-        if not 0 <= fold < num_folds:
-            raise ValueError("fold must be in [0, num_folds).")
-
-        splitter = StratifiedKFold(
-            n_splits=num_folds,
-            shuffle=True,
-            random_state=seed,
-        )
-        if split_mode == "comp_inter":
-            indices = np.arange(len(self.dataset))
-            fold_ids = np.empty(len(self.dataset), dtype=np.int64)
-            for fold_index, (_, valid_indices) in enumerate(
-                splitter.split(indices, self.dataset["tpsa_binary_avg"])
-            ):
-                fold_ids[valid_indices] = fold_index
-        else:
-            systems = self.dataset.groupby(
-                ["solv1", "solv2"],
-                as_index=False,
-            )["tpsa_binary_avg"].mean()
-            system_fold_ids = np.empty(len(systems), dtype=np.int64)
-            for fold_index, (_, valid_indices) in enumerate(
-                splitter.split(systems, systems["tpsa_binary_avg"])
-            ):
-                system_fold_ids[valid_indices] = fold_index
-            fold_map = {
-                (system.solv1, system.solv2): system_fold_ids[index]
-                for index, system in systems.iterrows()
-            }
-            fold_ids = np.asarray(
-                [
-                    fold_map[(record.solv1, record.solv2)]
-                    for record in dataset.itertuples()
-                ]
-            )
-
-        selected = fold_ids != fold if split_part == "train" else fold_ids == fold
-        return dataset.loc[selected].reset_index(drop=True)
 
     def cache_config(self):
         """Return all inputs that determine the molecular graph cache."""
