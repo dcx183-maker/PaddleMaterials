@@ -30,7 +30,6 @@ from paddle.io import Dataset
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 from ppmat.datasets.build_molecule import BuildMolecule
-from ppmat.datasets.split_gegnn_data import split_binary_activity_data
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
 from ppmat.utils import logger
@@ -156,29 +155,6 @@ def build_molecular_graph(molecule, converter):
     return graph
 
 
-def build_mixture_sample(molecule1, molecule2, x1, converter):
-    """Create one label-free GE-GNN binary-mixture sample."""
-    graphs = [
-        build_molecular_graph(molecule, converter)
-        for molecule in (molecule1, molecule2)
-    ]
-    if any(graph is None for graph in graphs):
-        raise ValueError("Failed to build molecular graph for mixture component.")
-
-    hba = [rdMolDescriptors.CalcNumHBA(molecule) for molecule in (molecule1, molecule2)]
-    hbd = [rdMolDescriptors.CalcNumHBD(molecule) for molecule in (molecule1, molecule2)]
-    return {
-        "g1": graphs[0],
-        "g2": graphs[1],
-        "x1": float(x1),
-        "x2": 1.0 - float(x1),
-        "intra_hb1": min(hba[0], hbd[0]),
-        "intra_hb2": min(hba[1], hbd[1]),
-        "inter_hb": min(hba[0], hbd[1]) + min(hbd[0], hba[1]),
-        "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
-    }
-
-
 class BinaryActivityDataset(Dataset):
     """Binary-mixture activity-coefficient dataset.
 
@@ -187,8 +163,8 @@ class BinaryActivityDataset(Dataset):
     """
 
     name = "binary_activity"
-    url = _DATA_URL + _DATA_FILE
-    solvent_url = _DATA_URL + _SOLVENT_FILE
+    url = _DATA_URL
+    solvent_url = _DATA_URL
     _REQUIRED_COLUMNS = {
         "solv1",
         "solv2",
@@ -201,11 +177,6 @@ class BinaryActivityDataset(Dataset):
         self,
         path: str = "./data/binary_activity/output_binary_with_inf_all.csv",
         solvent_list_path: Optional[str] = None,
-        split_mode: str = "all",
-        split_part: str = "all",
-        fold: int = 0,
-        num_folds: int = 5,
-        seed: int = 2021,
         build_graph_cfg: Optional[Dict] = None,
         cache_path: Optional[str] = None,
         overwrite: bool = False,
@@ -215,14 +186,17 @@ class BinaryActivityDataset(Dataset):
 
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
-            root_path = download.get_datasets_path_from_url(self.url)
-            path = osp.join(root_path, self.name, osp.basename(path))
+            path = download.get_path_from_url(
+                self.url + osp.basename(path),
+                osp.dirname(path),
+                decompress=False,
+            )
         if solvent_list_path is None:
             solvent_list_path = osp.join(osp.dirname(path), _SOLVENT_FILE)
         if not osp.exists(solvent_list_path):
-            download.get_path_from_url(
-                self.solvent_url,
-                osp.dirname(path),
+            solvent_list_path = download.get_path_from_url(
+                self.solvent_url + _SOLVENT_FILE,
+                osp.dirname(solvent_list_path),
                 decompress=False,
             )
 
@@ -243,14 +217,6 @@ class BinaryActivityDataset(Dataset):
 
         self.cache_exists = True if osp.exists(self.cache_path) else False
         self.dataset = self.read_data(path)
-        self.dataset = split_binary_activity_data(
-            self.dataset,
-            split_mode,
-            split_part,
-            fold,
-            num_folds,
-            seed,
-        )
         self.solvent_smiles = self.read_solvent_smiles(solvent_list_path)
         self.solvent_ids = list(self.solvent_smiles)
         self.solvent_index = {
@@ -340,7 +306,7 @@ class BinaryActivityDataset(Dataset):
                 overwrite = True
 
         if overwrite or not self.cache_exists:
-            if dist.get_rank() == 0:
+            if not dist.is_initialized() or dist.get_rank() == 0:
                 os.makedirs(self.cache_path, exist_ok=True)
                 os.makedirs(graph_cache_path, exist_ok=True)
                 self.save_to_cache(config_cache_path, self.cache_config())

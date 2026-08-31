@@ -1,10 +1,8 @@
 import os
-import tempfile
 import unittest
 
 import numpy as np
 import paddle
-import pandas as pd
 from omegaconf import OmegaConf
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
@@ -17,7 +15,6 @@ from ppmat.datasets.gegnn_dataset import build_molecular_graph
 from ppmat.models import build_graph_converter
 from ppmat.models import build_model
 from ppmat.models.gegnn import GEGNNBinary
-from ppmat.predictor import PropertyPredictor
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -187,36 +184,6 @@ class TestGEGNNBinary(unittest.TestCase):
         config = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
         self.assertIsInstance(build_model(config["Model"]), GEGNNBinary)
 
-    def test_property_predictor_binary_mixture(self):
-        model = self._new_model()
-        predictor = object.__new__(PropertyPredictor)
-        predictor.model = model
-        predictor.post_process = lambda output: output
-        predictor.eval_with_no_grad = False
-
-        components = []
-        for smiles in ("CCO", "O"):
-            molecule = Chem.MolFromSmiles(smiles)
-            hba = rdMolDescriptors.CalcNumHBA(molecule)
-            hbd = rdMolDescriptors.CalcNumHBD(molecule)
-            components.append(
-                {
-                    "graph": build_molecular_graph(
-                        molecule, build_graph_converter(_MOLECULAR_GRAPH_CFG)
-                    ),
-                    "hba": hba,
-                    "hbd": hbd,
-                    "intra_hb": min(hba, hbd),
-                    "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
-                }
-            )
-
-        output = predictor.from_mixture(components[0], components[1], 0.5)
-
-        self.assertEqual(output["gamma"].shape, [1, 2])
-        with self.assertRaises(ValueError):
-            predictor.from_mixture(components[0], components[1], 1.1)
-
     def test_gegnn_config_contract(self):
         config_path = os.path.join(
             BASE_DIR,
@@ -243,119 +210,14 @@ class TestGEGNNBinary(unittest.TestCase):
         self.assertNotIn("pinn_lambda", init_params)
         self.assertNotIn("finite_difference_step", init_params)
         self.assertFalse(config.Trainer["eval_with_no_grad"])
-        for split_part in ("train", "val"):
-            params = config.Dataset[split_part]["dataset"]["__init_params__"]
-            self.assertEqual(params["split_mode"], "comp_inter")
-            self.assertEqual(params["split_part"], split_part)
-            self.assertEqual(params["fold"], 0)
-            self.assertEqual(params["num_folds"], 5)
         self.assertEqual(
             OmegaConf.to_container(config, resolve=False)["Dataset"]["train"][
                 "dataset"
             ]["__init_params__"]["path"],
             "./data/binary_activity/output_binary_with_inf_all.csv",
         )
+        self.assertNotIn("val", config.Dataset)
         self.assertNotIn("collate_params", config.Dataset["train"]["loader"])
-
-
-class TestBinaryActivitySplits(unittest.TestCase):
-    @staticmethod
-    def _write_dataset(root_dir):
-        solvent_list = pd.DataFrame(
-            {
-                "solvent_id": [1, 2, 3, 4],
-                "solvent_name": ["water", "ethanol", "acetone", "benzene"],
-                "smiles_can": ["O", "CCO", "CC(=O)C", "c1ccccc1"],
-            }
-        )
-        solvent_list.to_csv(os.path.join(root_dir, "solvent_list.csv"), index=False)
-        records = []
-        systems = ((1, 2), (1, 3), (2, 4), (3, 4), (2, 1), (3, 1))
-        for system_index, (solv1, solv2) in enumerate(systems):
-            for repeat in range(6):
-                records.append(
-                    {
-                        "solv1": solv1,
-                        "solv2": solv2,
-                        "solv1_x": (repeat + 1) / 7.0,
-                        "solv1_gamma": 0.1,
-                        "solv2_gamma": -0.1,
-                        "tpsa_binary_avg": system_index % 2,
-                    }
-                )
-        pd.DataFrame(records).to_csv(os.path.join(root_dir, "binary.csv"), index=False)
-
-    def _dataset(self, root_dir, split_mode, split_part, fold=0):
-        data = pd.read_csv(os.path.join(root_dir, "binary.csv"))
-        return split_binary_activity_data(
-            data,
-            split_mode,
-            split_part,
-            fold=fold,
-            num_folds=2,
-            seed=2021,
-        )
-
-    def test_composition_split_is_disjoint_complete_and_deterministic(self):
-        with tempfile.TemporaryDirectory() as root_dir:
-            self._write_dataset(root_dir)
-            train = self._dataset(root_dir, "comp_inter", "train")
-            val = self._dataset(root_dir, "comp_inter", "val")
-            repeated_train = self._dataset(root_dir, "comp_inter", "train")
-
-            source = pd.read_csv(os.path.join(root_dir, "binary.csv"))
-            all_rows = set(map(tuple, source.to_numpy()))
-            train_rows = set(map(tuple, train.dataset.to_numpy()))
-            val_rows = set(map(tuple, val.dataset.to_numpy()))
-            self.assertFalse(train_rows & val_rows)
-            self.assertEqual(train_rows | val_rows, all_rows)
-            self.assertTrue(train.dataset.equals(repeated_train.dataset))
-            self.assertEqual(
-                set(train.dataset["tpsa_binary_avg"]),
-                set(val.dataset["tpsa_binary_avg"]),
-            )
-
-    def test_system_split_keeps_upstream_ordered_pairs_together(self):
-        with tempfile.TemporaryDirectory() as root_dir:
-            self._write_dataset(root_dir)
-            partitions = [
-                self._dataset(root_dir, "system_extra", part)
-                for part in ("train", "val")
-            ]
-            pair_partitions = {}
-            for partition_index, dataset in enumerate(partitions):
-                for solv1, solv2 in dataset[["solv1", "solv2"]].itertuples(index=False):
-                    pair = (solv1, solv2)
-                    pair_partitions.setdefault(pair, set()).add(partition_index)
-            self.assertTrue(pair_partitions)
-            self.assertTrue(all(len(parts) == 1 for parts in pair_partitions.values()))
-
-    def test_cache_is_reused_for_different_splits(self):
-        with tempfile.TemporaryDirectory() as root_dir:
-            self._write_dataset(root_dir)
-            path = os.path.join(root_dir, "binary.csv")
-            solvent_list_path = os.path.join(root_dir, "solvent_list.csv")
-            train = BinaryActivityDataset(
-                path=path,
-                solvent_list_path=solvent_list_path,
-                split_mode="comp_inter",
-                split_part="train",
-                fold=0,
-                num_folds=2,
-            )
-            val = BinaryActivityDataset(
-                path=path,
-                solvent_list_path=solvent_list_path,
-                split_mode="comp_inter",
-                split_part="val",
-                fold=0,
-                num_folds=2,
-            )
-
-            self.assertEqual(train.cache_path, val.cache_path)
-            self.assertEqual(train.solvent_ids, val.solvent_ids)
-            self.assertTrue(os.path.exists(train.graphs[0]))
-            self.assertEqual(len(val), len(val.dataset))
 
 
 class TestAtomFeaturization(unittest.TestCase):

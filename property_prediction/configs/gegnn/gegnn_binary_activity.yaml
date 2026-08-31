@@ -37,6 +37,7 @@ Model:
   __class_name__: GEGNNBinary
   __init_params__:
     in_dim: 74
+    edge_in_feats: 3
     hidden_dim: 256
     n_classes: 1
     mlp_dropout_rate: 0.0
@@ -75,11 +76,6 @@ Dataset:
       __class_name__: BinaryActivityDataset
       __init_params__:
         path: ./data/binary_activity/output_binary_with_inf_all.csv
-        split_mode: "comp_inter"
-        split_part: "train"
-        fold: 0
-        num_folds: 5
-        seed: ${Trainer.seed}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -88,23 +84,4 @@ Dataset:
       __init_params__:
         shuffle: True
         drop_last: True
-        batch_size: 256
-  val:
-    dataset:
-      __class_name__: BinaryActivityDataset
-      __init_params__:
-        path: ./data/binary_activity/output_binary_with_inf_all.csv
-        split_mode: "comp_inter"
-        split_part: "val"
-        fold: 0
-        num_folds: 5
-        seed: ${Trainer.seed}
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-    sampler:
-      __class_name__: BatchSampler
-      __init_params__:
-        shuffle: False
-        drop_last: False
         batch_size: 256

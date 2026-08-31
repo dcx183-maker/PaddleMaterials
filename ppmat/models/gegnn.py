@@ -249,6 +249,7 @@ class GEGNNBinary(paddle.nn.Layer):
         mpnn_activation="relu",
         mlp_num_hid_layers=2,
         property_name="gamma",
+        edge_in_feats=3,
     ):
         super().__init__()
         if n_classes != 1:
@@ -267,7 +268,7 @@ class GEGNNBinary(paddle.nn.Layer):
         self.conv2 = HigherOrderGraphConv(hidden_dim, hidden_dim)
         self.global_conv1 = MPNNconv(
             node_in_feats=hidden_dim,
-            edge_in_feats=1,
+            edge_in_feats=edge_in_feats,
             node_out_feats=hidden_dim,
             edge_hidden_feats=32,
             num_step_message_passing=1,

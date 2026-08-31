@@ -85,25 +85,6 @@ class PropertyPredictor(BasePredictor):
         data = self.graph_converter(structures)
         return self._run_model(data)
 
-    def from_mixture(self, data1, data2, x1):
-        """Predict a binary mixture from converted component data."""
-        x1 = float(x1)
-        if not 0.0 <= x1 <= 1.0:
-            raise ValueError("x1 must be in the interval [0, 1].")
-
-        data = {
-            "g1": data1["graph"],
-            "g2": data2["graph"],
-            "x1": x1,
-            "x2": 1.0 - x1,
-            "intra_hb1": data1["intra_hb"],
-            "intra_hb2": data2["intra_hb"],
-            "inter_hb": min(data1["hba"], data2["hbd"])
-            + min(data1["hbd"], data2["hba"]),
-            "empty_solvsys": data1["empty_solvsys"],
-        }
-        return self._run_model(data)
-
     def from_molecule(self, molecule):
         data = self.graph_converter(molecule)
         return self._run_model(data)
