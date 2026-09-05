@@ -29,6 +29,7 @@ import pgl
 from paddle.io import Dataset
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
+
 from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
@@ -130,6 +131,7 @@ def _one_hot(value, values):
 
 
 def _canonical_atom_feats(atom):
+    """Match the upstream DGL-LifeSci ``CanonicalAtomFeaturizer`` (74 dims)."""
     return np.asarray(
         _one_hot(atom.GetSymbol(), _ATOM_TYPES)
         + _one_hot(atom.GetDegree(), _DEGREES)
@@ -158,8 +160,18 @@ def build_molecular_graph(molecule, converter):
 class BinaryActivityDataset(Dataset):
     """Binary-mixture activity-coefficient dataset.
 
-    Molecular graphs are built once and stored as indexed pickle files following
-    the cache lifecycle used by :class:`MP20Dataset`.
+    Molecular graphs are built once and cached as indexed pickle files.
+
+    Args:
+        path: Path to the binary activity CSV. If it does not exist, the
+            dataset will be downloaded.
+        solvent_list_path: Path to the solvent metadata CSV. Defaults to a
+            ``solvent_list.csv`` sibling of ``path``.
+        build_graph_cfg: Config for building molecular graphs. Defaults to
+            ``_MOLECULAR_GRAPH_CFG``.
+        cache_path: Directory for cached molecular graphs. Defaults to a
+            ``_cache`` sibling of the data directory.
+        overwrite: Whether to rebuild the cache even if it exists.
     """
 
     name = "binary_activity"
@@ -180,10 +192,10 @@ class BinaryActivityDataset(Dataset):
         build_graph_cfg: Optional[Dict] = None,
         cache_path: Optional[str] = None,
         overwrite: bool = False,
-        **kwargs,
     ):
         super().__init__()
 
+        # ---- download data if missing ----
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
             path = download.get_path_from_url(
@@ -204,8 +216,8 @@ class BinaryActivityDataset(Dataset):
         self.solvent_list_path = solvent_list_path
         self.build_graph_cfg = build_graph_cfg or _MOLECULAR_GRAPH_CFG
         self.build_molecule = BuildMolecule(format="smiles")
-        self.overwrite = overwrite
 
+        # ---- cache path ----
         if cache_path is not None:
             self.cache_path = cache_path
         else:
@@ -215,8 +227,15 @@ class BinaryActivityDataset(Dataset):
             )
         logger.info(f"Cache path: {self.cache_path}")
 
-        self.cache_exists = True if osp.exists(self.cache_path) else False
+        self.cache_exists = osp.exists(self.cache_path)
+        self.overwrite = overwrite
+
+        # ---- read data ----
         self.dataset = self.read_data(path)
+        self.num_samples = len(self.dataset)
+        logger.info(f"Load {self.num_samples} binary-mixture samples from {path}")
+
+        # ---- read solvent metadata ----
         self.solvent_smiles = self.read_solvent_smiles(solvent_list_path)
         self.solvent_ids = list(self.solvent_smiles)
         self.solvent_index = {
@@ -224,11 +243,71 @@ class BinaryActivityDataset(Dataset):
             for index, solvent_id in enumerate(self.solvent_ids)
         }
         self.num_solvents = len(self.solvent_ids)
-        self.num_samples = len(self.dataset)
-        logger.info(f"Load {self.num_samples} binary-mixture samples from {path}")
 
-        self.prepare_cache(overwrite)
+        # ---- build / validate molecular-graph cache (inlined) ----
         graph_cache_path = osp.join(self.cache_path, "graphs")
+        config_cache_path = osp.join(self.cache_path, "build_graph_cfg.pkl")
+
+        cache_config = {
+            "build_graph_cfg": self.build_graph_cfg,
+            "solvent_ids": self.solvent_ids,
+            "solvent_smiles": [
+                self.solvent_smiles[solvent_id] for solvent_id in self.solvent_ids
+            ],
+        }
+
+        need_rebuild = overwrite or not self.cache_exists
+        if self.cache_exists and not overwrite:
+            logger.warning(
+                "Cache enabled. Existing graph cache settings will be checked "
+                "before reuse."
+            )
+            try:
+                graph_paths = [
+                    osp.join(graph_cache_path, f"{index:010d}.pkl")
+                    for index in range(self.num_solvents)
+                ]
+                if not all(osp.exists(p) for p in graph_paths):
+                    raise FileNotFoundError("The cached graph files are incomplete.")
+                cached_config = self.load_from_cache(config_cache_path)
+                if is_equal(cached_config, cache_config):
+                    logger.info(
+                        "The cached graph configuration matches the current "
+                        "settings. Reusing previously generated molecular graphs."
+                    )
+                else:
+                    logger.warning(
+                        "build_graph_cfg or solvent metadata differs from cache. "
+                        "Will rebuild the graphs."
+                    )
+                    need_rebuild = True
+            except Exception as error:
+                logger.warning(error)
+                logger.warning(
+                    "Failed to load graph cache metadata. Will rebuild the graphs."
+                )
+                need_rebuild = True
+
+        if need_rebuild:
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                os.makedirs(graph_cache_path, exist_ok=True)
+                self.save_to_cache(config_cache_path, cache_config)
+                converter = build_graph_converter(self.build_graph_cfg)
+                for index, solvent_id in enumerate(self.solvent_ids):
+                    molecule = self.build_molecule(self.solvent_smiles[solvent_id])
+                    if molecule is None:
+                        raise ValueError(
+                            f"Invalid SMILES for solvent {solvent_id}: "
+                            f"{self.solvent_smiles[solvent_id]}"
+                        )
+                    self.save_to_cache(
+                        osp.join(graph_cache_path, f"{index:010d}.pkl"),
+                        self.build_solvent(molecule, converter),
+                    )
+                logger.info(f"Save {self.num_solvents} graphs to {graph_cache_path}")
+            if dist.is_initialized():
+                dist.barrier()
+
         self.graphs = [
             osp.join(graph_cache_path, f"{index:010d}.pkl")
             for index in range(self.num_solvents)
@@ -243,14 +322,13 @@ class BinaryActivityDataset(Dataset):
                 "Binary activity CSV is missing columns: "
                 f"{sorted(missing_columns)}"
             )
-        return dataset
+        return dataset.reset_index(drop=True)
 
     def read_solvent_smiles(self, solvent_list_path):
-        """Read SMILES for solvent IDs used by the selected split."""
+        """Read SMILES for solvent IDs used by the dataset."""
         solvents = pd.read_csv(solvent_list_path, index_col="solvent_id")
         if "smiles_can" not in solvents:
             raise ValueError("Solvent metadata must contain 'smiles_can'.")
-
         solvent_ids = pd.unique(
             self.dataset[["solv1", "solv2"]].to_numpy().ravel()
         ).tolist()
@@ -259,77 +337,9 @@ class BinaryActivityDataset(Dataset):
             for solvent_id in solvent_ids
         }
 
-    def cache_config(self):
-        """Return all inputs that determine the molecular graph cache."""
-        return {
-            "build_graph_cfg": self.build_graph_cfg,
-            "solvent_ids": self.solvent_ids,
-            "solvent_smiles": [
-                self.solvent_smiles[solvent_id]
-                for solvent_id in self.solvent_ids
-            ],
-        }
-
-    def prepare_cache(self, overwrite):
-        """Build or validate the indexed molecular graph cache."""
-        config_cache_path = osp.join(self.cache_path, "build_graph_cfg.pkl")
-        graph_cache_path = osp.join(self.cache_path, "graphs")
-        if self.cache_exists and not overwrite:
-            logger.warning(
-                "Cache enabled. Existing graph cache settings will be checked "
-                "before reuse."
-            )
-            try:
-                graph_paths = [
-                    osp.join(graph_cache_path, f"{index:010d}.pkl")
-                    for index in range(self.num_solvents)
-                ]
-                if not all(osp.exists(graph_path) for graph_path in graph_paths):
-                    raise FileNotFoundError("The cached graph files are incomplete.")
-                cache_config = self.load_from_cache(config_cache_path)
-                if is_equal(cache_config, self.cache_config()):
-                    logger.info(
-                        "The cached graph configuration matches the current "
-                        "settings. Reusing previously generated molecular graphs."
-                    )
-                else:
-                    logger.warning(
-                        "build_graph_cfg or solvent metadata differs from cache. "
-                        "Will rebuild the graphs."
-                    )
-                    overwrite = True
-            except Exception as error:
-                logger.warning(error)
-                logger.warning(
-                    "Failed to load graph cache metadata. Will rebuild the graphs."
-                )
-                overwrite = True
-
-        if overwrite or not self.cache_exists:
-            if not dist.is_initialized() or dist.get_rank() == 0:
-                os.makedirs(self.cache_path, exist_ok=True)
-                os.makedirs(graph_cache_path, exist_ok=True)
-                self.save_to_cache(config_cache_path, self.cache_config())
-                converter = build_graph_converter(self.build_graph_cfg)
-                for index, solvent_id in enumerate(self.solvent_ids):
-                    molecule = self.build_molecule(self.solvent_smiles[solvent_id])
-                    if molecule is None:
-                        raise ValueError(
-                            f"Invalid SMILES for solvent {solvent_id}: "
-                            f"{self.solvent_smiles[solvent_id]}"
-                        )
-                    self.save_to_cache(
-                        osp.join(graph_cache_path, f"{index:010d}.pkl"),
-                        self.build_solvent(molecule, converter),
-                    )
-                logger.info(
-                    f"Save {self.num_solvents} graphs to {graph_cache_path}"
-                )
-            if dist.is_initialized():
-                dist.barrier()
-
     @staticmethod
     def build_solvent(molecule, converter):
+        """Build one cached solvent entry: graph + H-bond descriptors."""
         graph = build_molecular_graph(molecule, converter)
         if graph is None:
             raise ValueError("Failed to build molecular graph.")
@@ -357,12 +367,8 @@ class BinaryActivityDataset(Dataset):
         if isinstance(idx, paddle.Tensor):
             idx = idx.item()
         row = self.dataset.iloc[idx]
-        solvent1 = self.load_from_cache(
-            self.graphs[self.solvent_index[row.solv1]]
-        )
-        solvent2 = self.load_from_cache(
-            self.graphs[self.solvent_index[row.solv2]]
-        )
+        solvent1 = self.load_from_cache(self.graphs[self.solvent_index[row.solv1]])
+        solvent2 = self.load_from_cache(self.graphs[self.solvent_index[row.solv2]])
         return {
             "g1": solvent1["graph"],
             "g2": solvent2["graph"],

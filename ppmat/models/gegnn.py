@@ -305,11 +305,16 @@ class GEGNNBinary(paddle.nn.Layer):
         hg1 = _segment_mean(h1, g1.graph_node_id, batch_size)
         hg2 = _segment_mean(h2, g2.graph_node_id, batch_size)
 
+        inter_hb = self._as_column(data["inter_hb"])
+        intra_hb1 = self._as_column(data["intra_hb1"])
+        intra_hb2 = self._as_column(data["intra_hb2"])
+        # Edge order in generate_solvsys: 1->2 cross, 2->1 cross, 1->1 self, 2->2 self
         edge_features = paddle.concat(
             [
-                self._as_column(data["inter_hb"]).tile([2, 1]),
-                self._as_column(data["intra_hb1"]),
-                self._as_column(data["intra_hb2"]),
+                paddle.concat([inter_hb, intra_hb1, intra_hb2], axis=1),
+                paddle.concat([inter_hb, intra_hb2, intra_hb1], axis=1),
+                paddle.concat([inter_hb, intra_hb1, intra_hb1], axis=1),
+                paddle.concat([inter_hb, intra_hb2, intra_hb2], axis=1),
             ],
             axis=0,
         )
