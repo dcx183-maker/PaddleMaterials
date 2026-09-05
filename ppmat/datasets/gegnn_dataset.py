@@ -175,6 +175,7 @@ class BinaryActivityDataset(Dataset):
     """
 
     name = "binary_activity"
+    md5 = ""
     url = _DATA_URL
     solvent_url = _DATA_URL
     _REQUIRED_COLUMNS = {
@@ -195,7 +196,6 @@ class BinaryActivityDataset(Dataset):
     ):
         super().__init__()
 
-        # ---- download data if missing ----
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
             path = download.get_path_from_url(
@@ -217,7 +217,6 @@ class BinaryActivityDataset(Dataset):
         self.build_graph_cfg = build_graph_cfg or _MOLECULAR_GRAPH_CFG
         self.build_molecule = BuildMolecule(format="smiles")
 
-        # ---- cache path ----
         if cache_path is not None:
             self.cache_path = cache_path
         else:
@@ -230,12 +229,10 @@ class BinaryActivityDataset(Dataset):
         self.cache_exists = osp.exists(self.cache_path)
         self.overwrite = overwrite
 
-        # ---- read data ----
         self.dataset = self.read_data(path)
         self.num_samples = len(self.dataset)
         logger.info(f"Load {self.num_samples} binary-mixture samples from {path}")
 
-        # ---- read solvent metadata ----
         self.solvent_smiles = self.read_solvent_smiles(solvent_list_path)
         self.solvent_ids = list(self.solvent_smiles)
         self.solvent_index = {
@@ -244,7 +241,6 @@ class BinaryActivityDataset(Dataset):
         }
         self.num_solvents = len(self.solvent_ids)
 
-        # ---- build / validate molecular-graph cache (inlined) ----
         graph_cache_path = osp.join(self.cache_path, "graphs")
         config_cache_path = osp.join(self.cache_path, "build_graph_cfg.pkl")
 
