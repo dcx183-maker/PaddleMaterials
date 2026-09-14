@@ -169,7 +169,7 @@ class BinaryActivityDataset(Dataset):
     """
 
     name = "binary_activity"
-    md5 = ""
+    md5 = {"output_binary_with_inf_all.csv": "67c7b4112cb248c7284004bab14398a4", "solvent_list.csv": "5fdb2e2295b327cd111cea5e19db9fcf"}
     url = (
         "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
         "thermodynamic_data_of_binary_mixtures/"
@@ -199,6 +199,7 @@ class BinaryActivityDataset(Dataset):
             path = download.get_path_from_url(
                 self.url + osp.basename(path),
                 osp.dirname(path),
+                md5sum=self.md5.get(osp.basename(path)),
                 decompress=False,
             )
         if solvent_list_path is None:
@@ -207,6 +208,7 @@ class BinaryActivityDataset(Dataset):
             solvent_list_path = download.get_path_from_url(
                 self.url + self.solvent_file,
                 osp.dirname(solvent_list_path),
+                md5sum=self.md5.get(self.solvent_file),
                 decompress=False,
             )
 
