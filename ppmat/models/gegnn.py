@@ -44,10 +44,6 @@ def get_activation(activation, get_nn=False):
 
 class HigherOrderGraphConv(paddle.nn.Layer):
     """GCN convolution equivalent to PGL ``GCNConv(norm=True)``.
-
-    The implementation uses matrix primitives because the fused
-    ``send_u_recv`` operator in official PaddlePaddle releases does not expose
-    the higher-order gradient required by GE-GNN training.
     """
 
     def __init__(self, input_size, output_size):
@@ -107,10 +103,6 @@ class NNConv(paddle.nn.Layer):
         dst = edges[:, 1]
 
         edge_weight = self.edge_network(edge_feats)
-        # DGL NNConv interprets each edge-network output as [in, out] and
-        # computes h_src @ W_edge. Keep that orientation exactly; [out, in]
-        # is shape-compatible for the square GE-GNN interaction layer but is
-        # numerically a transposed operator.
         edge_weight = paddle.reshape(edge_weight, [-1, self.in_size, self.out_size])
 
         source_assignment = paddle.nn.functional.one_hot(
@@ -131,11 +123,6 @@ class NNConv(paddle.nn.Layer):
 
 class HigherOrderGRUCell(paddle.nn.Layer):
     """One GRU step expressed with primitive ops for higher-order autograd.
-
-    Paddle's fused ``GRU`` backward has no gradient operator in official 3.1.0
-    releases. GE-GNN differentiates its prediction once with respect to
-    composition and then backpropagates the supervised loss, so an equivalent
-    unfused cell is required. Gate order follows PyTorch: reset, update, new.
     """
 
     def __init__(self, input_size, hidden_size):
@@ -201,14 +188,6 @@ class MPNNconv(paddle.nn.Layer):
 
 class GEGNNBinary(paddle.nn.Layer):
     """GE-GNN for binary activity coefficients.
-
-    The model predicts one dimensionless excess Gibbs energy ``G^E`` per binary
-    mixture. The two logarithmic activity coefficients are then derived from
-    its composition derivative, which satisfies the Gibbs--Duhem relation by
-    construction:
-
-    ``ln(gamma1) = G^E + (1 - x1) dG^E/dx1``
-    ``ln(gamma2) = G^E - x1 dG^E/dx1``.
     """
 
     @staticmethod
@@ -262,8 +241,6 @@ class GEGNNBinary(paddle.nn.Layer):
         self.classify1 = paddle.nn.Linear(hidden_dim + 1, hidden_dim)
         self.classify2 = paddle.nn.Linear(hidden_dim, hidden_dim)
         self.classify3 = paddle.nn.Linear(hidden_dim, 1)
-        # Retained in the public constructor for config compatibility. The
-        # reference GE-GNN does not apply dropout in its scalar G^E head.
         self.mlp_dropout_rate = mlp_dropout_rate
         if isinstance(property_name, (list, tuple)):
             property_name = property_name[0]
@@ -284,7 +261,6 @@ class GEGNNBinary(paddle.nn.Layer):
         inter_hb = self._as_column(data["inter_hb"])
         intra_hb1 = self._as_column(data["intra_hb1"])
         intra_hb2 = self._as_column(data["intra_hb2"])
-        # Edge order in generate_solvsys: 1->2 cross, 2->1 cross, 1->1 self, 2->2 self
         edge_features = paddle.concat(
             [
                 paddle.concat([inter_hb, intra_hb1, intra_hb2], axis=1),

@@ -33,6 +33,7 @@ from rdkit.Chem import rdMolDescriptors
 from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
+from ppmat.utils.download import DATASETS_HOME
 from ppmat.utils import logger
 from ppmat.utils.misc import is_equal
 
@@ -196,18 +197,22 @@ class BinaryActivityDataset(Dataset):
 
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
+            root_path = osp.join(DATASETS_HOME, self.name)
+            os.makedirs(root_path, exist_ok=True)
             path = download.get_path_from_url(
                 self.url + osp.basename(path),
-                osp.dirname(path),
+                root_path,
                 md5sum=self.md5.get(osp.basename(path)),
                 decompress=False,
             )
         if solvent_list_path is None:
             solvent_list_path = osp.join(osp.dirname(path), self.solvent_file)
         if not osp.exists(solvent_list_path):
+            root_path = osp.join(DATASETS_HOME, self.name)
+            os.makedirs(root_path, exist_ok=True)
             solvent_list_path = download.get_path_from_url(
                 self.url + self.solvent_file,
-                osp.dirname(solvent_list_path),
+                root_path,
                 md5sum=self.md5.get(self.solvent_file),
                 decompress=False,
             )
