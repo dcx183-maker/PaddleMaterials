@@ -10,7 +10,6 @@ from rdkit.Chem import rdMolDescriptors
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
 from ppmat.datasets.gegnn_dataset import _MOLECULAR_GRAPH_CFG
-from ppmat.datasets.gegnn_dataset import _canonical_atom_feats
 from ppmat.datasets.gegnn_dataset import build_molecular_graph
 from ppmat.models import build_graph_converter
 from ppmat.models import build_model
@@ -221,12 +220,6 @@ class TestGEGNNBinary(unittest.TestCase):
 
 
 class TestAtomFeaturization(unittest.TestCase):
-    def test_canonical_atom_feats(self):
-        mol = Chem.MolFromSmiles("CCO")
-        atom = mol.GetAtomWithIdx(0)
-        feats = _canonical_atom_feats(atom)
-        self.assertEqual(feats.shape[0], 74)
-        self.assertEqual(feats.dtype, np.float32)
 
     def test_molecular_graph_converter(self):
         mol = Chem.MolFromSmiles("CCO")

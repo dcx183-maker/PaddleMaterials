@@ -99,6 +99,25 @@ _MOLECULAR_GRAPH_VOCAB = {
         "token_to_id": {atom: i for i, atom in enumerate(_ATOM_TYPES)},
         "num_embeddings": len(_ATOM_TYPES),
     },
+    "degree": {
+        "token_to_id": {deg: i for i, deg in enumerate(_DEGREES)},
+        "num_embeddings": len(_DEGREES),
+    },
+    "implicit_valence": {
+        "token_to_id": {val: i for i, val in enumerate(_VALENCES)},
+        "num_embeddings": len(_VALENCES),
+    },
+    "formal_charge": {},
+    "radical_electrons": {},
+    "hybridization": {
+        "token_to_id": {hyb: i for i, hyb in enumerate(_HYBRIDIZATIONS)},
+        "num_embeddings": len(_HYBRIDIZATIONS),
+    },
+    "is_aromatic": {},
+    "total_num_hs": {
+        "token_to_id": {num: i for i, num in enumerate(_NUM_H)},
+        "num_embeddings": len(_NUM_H),
+    },
     "bond": {
         "token_to_id": {
             "NO_BOND": 0,
@@ -121,34 +140,12 @@ _MOLECULAR_GRAPH_CFG = {
 }
 
 
-def _one_hot(value, values):
-    return [int(value == item) for item in values]
-
-
-def _canonical_atom_feats(atom):
-    """Match the upstream DGL-LifeSci ``CanonicalAtomFeaturizer`` (74 dims)."""
-    return np.asarray(
-        _one_hot(atom.GetSymbol(), _ATOM_TYPES)
-        + _one_hot(atom.GetDegree(), _DEGREES)
-        + _one_hot(atom.GetImplicitValence(), _VALENCES)
-        + [atom.GetFormalCharge(), atom.GetNumRadicalElectrons()]
-        + _one_hot(atom.GetHybridization(), _HYBRIDIZATIONS)
-        + [int(atom.GetIsAromatic())]
-        + _one_hot(atom.GetTotalNumHs(), _NUM_H),
-        dtype="float32",
-    )
-
 
 def build_molecular_graph(molecule, converter):
-    """Build the molecular graph and GE-GNN atom features."""
+    """Build the molecular graph."""
     graph = converter(molecule)
     if graph is not None:
-        graph.node_feat["h"] = np.stack(
-            [
-                _canonical_atom_feats(molecule.GetAtomWithIdx(index))
-                for index in range(molecule.GetNumAtoms())
-            ]
-        )
+        graph.node_feat["h"] = graph.node_feat["feat"]
     return graph
 
 

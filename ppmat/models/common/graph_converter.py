@@ -389,16 +389,43 @@ class MolecularGraphConverter:
         num_bond_embeddings = int(bond_vocab["num_embeddings"])
         no_bond_id = bond_token_to_id["NO_BOND"]
 
-        # 1) Node Features: One-hot encoding of atomic symbols.
-        idxs: List[int] = []
+        # 1) Node Features: One-hot encoding of atomic symbols and optional features.
+        node_feats = []
         for atom in mol.GetAtoms():
+            feat = []
+            
             sym = atom.GetSymbol()
             if sym not in atom_token_to_id:
-                return None  # Unknown Elements: Can be replaced with an extended
-                # vocabulary or placeholder <unk>
-            idxs.append(atom_token_to_id[sym])
-        idxs_np = np.asarray(idxs, dtype=np.int64)  # [N]
-        x = np.eye(num_atom_embeddings, dtype=np.float32)[idxs_np]
+                return None  # Unknown Elements
+            feat.extend(np.eye(num_atom_embeddings, dtype=np.float32)[atom_token_to_id[sym]])
+            
+            if "degree" in vocab:
+                idx = vocab["degree"]["token_to_id"].get(atom.GetDegree(), -1)
+                feat.extend(np.eye(vocab["degree"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["degree"]["num_embeddings"], dtype=np.float32))
+
+            if "implicit_valence" in vocab:
+                idx = vocab["implicit_valence"]["token_to_id"].get(atom.GetImplicitValence(), -1)
+                feat.extend(np.eye(vocab["implicit_valence"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["implicit_valence"]["num_embeddings"], dtype=np.float32))
+            
+            if "formal_charge" in vocab:
+                feat.append(float(atom.GetFormalCharge()))
+                
+            if "radical_electrons" in vocab:
+                feat.append(float(atom.GetNumRadicalElectrons()))
+                
+            if "hybridization" in vocab:
+                idx = vocab["hybridization"]["token_to_id"].get(atom.GetHybridization(), -1)
+                feat.extend(np.eye(vocab["hybridization"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["hybridization"]["num_embeddings"], dtype=np.float32))
+            
+            if "is_aromatic" in vocab:
+                feat.append(float(atom.GetIsAromatic()))
+            
+            if "total_num_hs" in vocab:
+                idx = vocab["total_num_hs"]["token_to_id"].get(atom.GetTotalNumHs(), -1)
+                feat.extend(np.eye(vocab["total_num_hs"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["total_num_hs"]["num_embeddings"], dtype=np.float32))
+
+            node_feats.append(feat)
+        x = np.asarray(node_feats, dtype=np.float32)
 
         # 2) Build the edges first (construct edge_index/edge_attr)
         rows, cols, etypes = [], [], []
