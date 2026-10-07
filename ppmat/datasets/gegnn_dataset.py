@@ -39,107 +39,6 @@ from ppmat.utils.misc import is_equal
 
 __all__ = ["BinaryActivityDataset"]
 
-_ATOM_TYPES = [
-    "C",
-    "N",
-    "O",
-    "S",
-    "F",
-    "Si",
-    "P",
-    "Cl",
-    "Br",
-    "Mg",
-    "Na",
-    "Ca",
-    "Fe",
-    "As",
-    "Al",
-    "I",
-    "B",
-    "V",
-    "K",
-    "Tl",
-    "Yb",
-    "Sb",
-    "Sn",
-    "Ag",
-    "Pd",
-    "Co",
-    "Se",
-    "Ti",
-    "Zn",
-    "H",
-    "Li",
-    "Ge",
-    "Cu",
-    "Au",
-    "Ni",
-    "Cd",
-    "In",
-    "Mn",
-    "Zr",
-    "Cr",
-    "Pt",
-    "Hg",
-    "Pb",
-]
-_DEGREES = list(range(11))
-_VALENCES = list(range(7))
-_HYBRIDIZATIONS = [
-    Chem.rdchem.HybridizationType.SP,
-    Chem.rdchem.HybridizationType.SP2,
-    Chem.rdchem.HybridizationType.SP3,
-    Chem.rdchem.HybridizationType.SP3D,
-    Chem.rdchem.HybridizationType.SP3D2,
-]
-_NUM_H = [0, 1, 2, 3, 4]
-_MOLECULAR_GRAPH_VOCAB = {
-    "atom": {
-        "token_to_id": {atom: i for i, atom in enumerate(_ATOM_TYPES)},
-        "num_embeddings": len(_ATOM_TYPES),
-    },
-    "degree": {
-        "token_to_id": {deg: i for i, deg in enumerate(_DEGREES)},
-        "num_embeddings": len(_DEGREES),
-    },
-    "implicit_valence": {
-        "token_to_id": {val: i for i, val in enumerate(_VALENCES)},
-        "num_embeddings": len(_VALENCES),
-    },
-    "formal_charge": {},
-    "radical_electrons": {},
-    "hybridization": {
-        "token_to_id": {hyb: i for i, hyb in enumerate(_HYBRIDIZATIONS)},
-        "num_embeddings": len(_HYBRIDIZATIONS),
-    },
-    "is_aromatic": {},
-    "total_num_hs": {
-        "token_to_id": {num: i for i, num in enumerate(_NUM_H)},
-        "num_embeddings": len(_NUM_H),
-    },
-    "bond": {
-        "token_to_id": {
-            "NO_BOND": 0,
-            "SINGLE": 1,
-            "DOUBLE": 2,
-            "TRIPLE": 3,
-            "AROMATIC": 4,
-        },
-        "num_embeddings": 5,
-    },
-}
-_MOLECULAR_GRAPH_CFG = {
-    "__class_name__": "MolecularGraphConverter",
-    "__init_params__": {
-        "vocab": _MOLECULAR_GRAPH_VOCAB,
-        "remove_h": False,
-        "add_self_loops": True,
-        "edge_mode": "bidirectional",
-    },
-}
-
-
 
 def build_molecular_graph(molecule, converter):
     """Build the molecular graph."""
@@ -186,6 +85,7 @@ class BinaryActivityDataset(Dataset):
         self,
         path: str = "./data/binary_activity/output_binary_with_inf_all.csv",
         solvent_list_path: Optional[str] = None,
+        vocab: Optional[Dict] = None,
         build_graph_cfg: Optional[Dict] = None,
         cache_path: Optional[str] = None,
         overwrite: bool = False,
@@ -216,7 +116,17 @@ class BinaryActivityDataset(Dataset):
 
         self.path = path
         self.solvent_list_path = solvent_list_path
-        self.build_graph_cfg = build_graph_cfg or _MOLECULAR_GRAPH_CFG
+        self.build_graph_cfg = build_graph_cfg or {
+            "__class_name__": "MolecularGraphConverter",
+            "__init_params__": {
+                "vocab": vocab,
+                "remove_h": False,
+                "add_self_loops": True,
+                "edge_mode": "bidirectional",
+            },
+        }
+        if vocab is not None and "__init_params__" in self.build_graph_cfg:
+            self.build_graph_cfg["__init_params__"]["vocab"] = vocab
         self.build_molecule = BuildMolecule(format="smiles")
 
         if cache_path is not None:
