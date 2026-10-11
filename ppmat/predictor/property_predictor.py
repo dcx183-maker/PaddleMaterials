@@ -21,7 +21,9 @@ import pandas as pd
 from tqdm import tqdm
 
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.build_solvent import BuildBinaryMixture
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.predictor.base import BasePredictor
 from ppmat.utils import logger
 
@@ -95,34 +97,15 @@ class PropertyPredictor(BasePredictor):
         Args:
             data1: Dict with keys ``graph``, ``hba``, ``hbd``, ``intra_hb`` for
                 the first mixture component (as produced by
-                ``BinaryActivityDataset.build_solvent``).
+                ``BuildSolvent``).
             data2: Dict with the same keys for the second component.
             x1: Mole fraction of the first component, in ``[0, 1]``.
 
         Returns:
             Prediction dict from the model.
         """
-        import numpy as np
-        import pgl
-
-        x1 = float(x1)
-        nodes = 2
-        source = [0, 1, 0, 1]
-        target = [1, 0, 0, 1]
-        empty_solvsys = pgl.Graph(
-            num_nodes=nodes,
-            edges=np.asarray(list(zip(source, target)), dtype=np.int64),
-        )
-        data = {
-            "g1": data1["graph"],
-            "g2": data2["graph"],
-            "x1": x1,
-            "x2": 1.0 - x1,
-            "intra_hb1": data1["intra_hb"],
-            "intra_hb2": data2["intra_hb"],
-            "inter_hb": min(data1["hba"], data2["hbd"]) + min(data1["hbd"], data2["hba"]),
-            "empty_solvsys": empty_solvsys,
-        }
+        sample = BuildBinaryMixture()(data1, data2, x1)
+        data = DefaultCollator()([sample])
         return self._run_model(data)
 
     def from_cif_file(self, cif_file_path, save_path=None):

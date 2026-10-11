@@ -43,8 +43,7 @@ def get_activation(activation, get_nn=False):
 
 
 class HigherOrderGraphConv(paddle.nn.Layer):
-    """GCN convolution equivalent to PGL ``GCNConv(norm=True)``.
-    """
+    """GCN convolution equivalent to PGL ``GCNConv(norm=True)``."""
 
     def __init__(self, input_size, output_size):
         super().__init__()
@@ -122,8 +121,7 @@ class NNConv(paddle.nn.Layer):
 
 
 class HigherOrderGRUCell(paddle.nn.Layer):
-    """One GRU step expressed with primitive ops for higher-order autograd.
-    """
+    """One GRU step expressed with primitive ops for higher-order autograd."""
 
     def __init__(self, input_size, hidden_size):
         super().__init__()
@@ -187,8 +185,7 @@ class MPNNconv(paddle.nn.Layer):
 
 
 class GEGNNBinary(paddle.nn.Layer):
-    """GE-GNN for binary activity coefficients.
-    """
+    """GE-GNN for binary activity coefficients."""
 
     @staticmethod
     def _as_column(value):
@@ -261,19 +258,20 @@ class GEGNNBinary(paddle.nn.Layer):
         inter_hb = self._as_column(data["inter_hb"])
         intra_hb1 = self._as_column(data["intra_hb1"])
         intra_hb2 = self._as_column(data["intra_hb2"])
-        edge_features = paddle.concat(
+        edge_features = paddle.stack(
             [
                 paddle.concat([inter_hb, intra_hb1, intra_hb2], axis=1),
                 paddle.concat([inter_hb, intra_hb2, intra_hb1], axis=1),
                 paddle.concat([inter_hb, intra_hb1, intra_hb1], axis=1),
                 paddle.concat([inter_hb, intra_hb2, intra_hb2], axis=1),
             ],
-            axis=0,
-        )
+            axis=1,
+        ).reshape([-1, 3])
         interaction_graph = data["empty_solvsys"].tensor()
-        return self.global_conv1(
-            interaction_graph, paddle.concat([hg1, hg2], axis=0), edge_features
-        )
+        node_features = paddle.stack([hg1, hg2], axis=1).reshape([2 * batch_size, -1])
+        output = self.global_conv1(interaction_graph, node_features, edge_features)
+        output = output.reshape([batch_size, 2, -1])
+        return paddle.concat([output[:, 0], output[:, 1]], axis=0)
 
     def _excess_gibbs_energy(self, data, x1):
         batch_size = x1.shape[0]

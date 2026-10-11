@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import os.path as osp
 import pickle
@@ -21,31 +22,21 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
-import numpy as np
 import paddle
 import paddle.distributed as dist
 import pandas as pd
-import pgl
 from paddle.io import Dataset
-from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
 
-from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.build_solvent import BuildBinaryMixture
+from ppmat.datasets.build_solvent import BuildSolvent
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
-from ppmat.utils.download import DATASETS_HOME
 from ppmat.utils import logger
+from ppmat.utils.download import DATASETS_HOME
 from ppmat.utils.misc import is_equal
+from ppmat.vocab import build_vocab
 
 __all__ = ["BinaryActivityDataset"]
-
-
-def build_molecular_graph(molecule, converter):
-    """Build the molecular graph."""
-    graph = converter(molecule)
-    if graph is not None:
-        graph.node_feat["h"] = graph.node_feat["feat"]
-    return graph
 
 
 class BinaryActivityDataset(Dataset):
@@ -58,21 +49,23 @@ class BinaryActivityDataset(Dataset):
             dataset will be downloaded.
         solvent_list_path: Path to the solvent metadata CSV. Defaults to a
             ``solvent_list.csv`` sibling of ``path``.
-        build_graph_cfg: Config for building molecular graphs. Defaults to
-            ``_MOLECULAR_GRAPH_CFG``.
+        vocab: Vocabulary package provided by the shared vocabulary builder.
+        build_molecule_cfg: Options for BuildMolecule. Defaults to SMILES.
+        build_graph_cfg: Config for building molecular graphs.
         cache_path: Directory for cached molecular graphs. Defaults to a
             ``_cache`` sibling of the data directory.
         overwrite: Whether to rebuild the cache even if it exists.
     """
 
     name = "binary_activity"
-    md5 = {"output_binary_with_inf_all.csv": "67c7b4112cb248c7284004bab14398a4", "solvent_list.csv": "5fdb2e2295b327cd111cea5e19db9fcf"}
+    md5 = {
+        "output_binary_with_inf_all.csv": "67c7b4112cb248c7284004bab14398a4",
+        "solvent_list.csv": "5fdb2e2295b327cd111cea5e19db9fcf",
+    }
     url = (
         "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
         "thermodynamic_data_of_binary_mixtures/"
     )
-    data_file = "output_binary_with_inf_all.csv"
-    solvent_file = "solvent_list.csv"
     _REQUIRED_COLUMNS = {
         "solv1",
         "solv2",
@@ -87,10 +80,12 @@ class BinaryActivityDataset(Dataset):
         solvent_list_path: Optional[str] = None,
         vocab: Optional[Dict] = None,
         build_graph_cfg: Optional[Dict] = None,
+        build_molecule_cfg: Optional[Dict] = None,
         cache_path: Optional[str] = None,
         overwrite: bool = False,
     ):
         super().__init__()
+        vocab = build_vocab(vocab)
 
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
@@ -103,31 +98,37 @@ class BinaryActivityDataset(Dataset):
                 decompress=False,
             )
         if solvent_list_path is None:
-            solvent_list_path = osp.join(osp.dirname(path), self.solvent_file)
+            solvent_list_path = osp.join(osp.dirname(path), "solvent_list.csv")
         if not osp.exists(solvent_list_path):
             root_path = osp.join(DATASETS_HOME, self.name)
             os.makedirs(root_path, exist_ok=True)
             solvent_list_path = download.get_path_from_url(
-                self.url + self.solvent_file,
+                self.url + "solvent_list.csv",
                 root_path,
-                md5sum=self.md5.get(self.solvent_file),
+                md5sum=self.md5.get("solvent_list.csv"),
                 decompress=False,
             )
 
         self.path = path
         self.solvent_list_path = solvent_list_path
-        self.build_graph_cfg = build_graph_cfg or {
-            "__class_name__": "MolecularGraphConverter",
-            "__init_params__": {
-                "vocab": vocab,
-                "remove_h": False,
-                "add_self_loops": True,
-                "edge_mode": "bidirectional",
-            },
-        }
+        self.build_graph_cfg = (
+            copy.deepcopy(build_graph_cfg)
+            if build_graph_cfg is not None
+            else {
+                "__class_name__": "MolecularGraphConverter",
+                "__init_params__": {
+                    "vocab": vocab,
+                    "remove_h": False,
+                    "add_self_loops": True,
+                    "edge_mode": "bidirectional",
+                    "node_feature_key": "h",
+                },
+            }
+        )
         if vocab is not None and "__init_params__" in self.build_graph_cfg:
             self.build_graph_cfg["__init_params__"]["vocab"] = vocab
-        self.build_molecule = BuildMolecule(format="smiles")
+        self.build_molecule_cfg = build_molecule_cfg or {"format": "smiles"}
+        self.build_mixture = BuildBinaryMixture()
 
         if cache_path is not None:
             self.cache_path = cache_path
@@ -148,8 +149,7 @@ class BinaryActivityDataset(Dataset):
         self.solvent_smiles = self.read_solvent_smiles(solvent_list_path)
         self.solvent_ids = list(self.solvent_smiles)
         self.solvent_index = {
-            solvent_id: index
-            for index, solvent_id in enumerate(self.solvent_ids)
+            solvent_id: index for index, solvent_id in enumerate(self.solvent_ids)
         }
         self.num_solvents = len(self.solvent_ids)
 
@@ -158,6 +158,7 @@ class BinaryActivityDataset(Dataset):
 
         cache_config = {
             "build_graph_cfg": self.build_graph_cfg,
+            "build_molecule_cfg": self.build_molecule_cfg,
             "solvent_ids": self.solvent_ids,
             "solvent_smiles": [
                 self.solvent_smiles[solvent_id] for solvent_id in self.solvent_ids
@@ -195,19 +196,16 @@ class BinaryActivityDataset(Dataset):
         if need_rebuild:
             if not dist.is_initialized() or dist.get_rank() == 0:
                 os.makedirs(graph_cache_path, exist_ok=True)
-                self.save_to_cache(config_cache_path, cache_config)
-                converter = build_graph_converter(self.build_graph_cfg)
+                build_solvent = BuildSolvent(
+                    build_graph_converter(self.build_graph_cfg),
+                    self.build_molecule_cfg,
+                )
                 for index, solvent_id in enumerate(self.solvent_ids):
-                    molecule = self.build_molecule(self.solvent_smiles[solvent_id])
-                    if molecule is None:
-                        raise ValueError(
-                            f"Invalid SMILES for solvent {solvent_id}: "
-                            f"{self.solvent_smiles[solvent_id]}"
-                        )
                     self.save_to_cache(
                         osp.join(graph_cache_path, f"{index:010d}.pkl"),
-                        self.build_solvent(molecule, converter),
+                        build_solvent(self.solvent_smiles[solvent_id]),
                     )
+                self.save_to_cache(config_cache_path, cache_config)
                 logger.info(f"Save {self.num_solvents} graphs to {graph_cache_path}")
             if dist.is_initialized():
                 dist.barrier()
@@ -223,8 +221,7 @@ class BinaryActivityDataset(Dataset):
         missing_columns = self._REQUIRED_COLUMNS.difference(dataset.columns)
         if missing_columns:
             raise ValueError(
-                "Binary activity CSV is missing columns: "
-                f"{sorted(missing_columns)}"
+                "Binary activity CSV is missing columns: " f"{sorted(missing_columns)}"
             )
         return dataset.reset_index(drop=True)
 
@@ -239,21 +236,6 @@ class BinaryActivityDataset(Dataset):
         return {
             solvent_id: solvents.loc[solvent_id, "smiles_can"]
             for solvent_id in solvent_ids
-        }
-
-    @staticmethod
-    def build_solvent(molecule, converter):
-        """Build one cached solvent entry: graph + H-bond descriptors."""
-        graph = build_molecular_graph(molecule, converter)
-        if graph is None:
-            raise ValueError("Failed to build molecular graph.")
-        hba = rdMolDescriptors.CalcNumHBA(molecule)
-        hbd = rdMolDescriptors.CalcNumHBD(molecule)
-        return {
-            "graph": graph,
-            "hba": hba,
-            "hbd": hbd,
-            "intra_hb": min(hba, hbd),
         }
 
     def save_to_cache(self, cache_path: str, data: Any):
@@ -273,45 +255,12 @@ class BinaryActivityDataset(Dataset):
         row = self.dataset.iloc[idx]
         solvent1 = self.load_from_cache(self.graphs[self.solvent_index[row.solv1]])
         solvent2 = self.load_from_cache(self.graphs[self.solvent_index[row.solv2]])
-        return {
-            "g1": solvent1["graph"],
-            "g2": solvent2["graph"],
-            "x1": np.asarray([float(row.solv1_x)], dtype="float32"),
-            "x2": np.asarray([1.0 - float(row.solv1_x)], dtype="float32"),
-            "gamma1": np.asarray([float(row.solv1_gamma)], dtype="float32"),
-            "gamma2": np.asarray([float(row.solv2_gamma)], dtype="float32"),
-            "gamma": np.asarray(
-                [float(row.solv1_gamma), float(row.solv2_gamma)], dtype="float32"
-            ),
-            "intra_hb1": np.asarray([solvent1["intra_hb"]], dtype="float32"),
-            "intra_hb2": np.asarray([solvent2["intra_hb"]], dtype="float32"),
-            "inter_hb": np.asarray(
-                [
-                    min(solvent1["hba"], solvent2["hbd"])
-                    + min(solvent1["hbd"], solvent2["hba"])
-                ],
-                dtype="float32",
-            ),
-            "empty_solvsys": self.generate_solvsys(1),
-        }
+        return self.build_mixture(
+            solvent1,
+            solvent2,
+            row.solv1_x,
+            gamma=[row.solv1_gamma, row.solv2_gamma],
+        )
 
     def __len__(self):
         return self.num_samples
-
-    @staticmethod
-    def generate_solvsys(batch_size=5):
-        nodes = 2 * batch_size
-        source = (
-            list(range(batch_size))
-            + list(range(batch_size, nodes))
-            + list(range(nodes))
-        )
-        target = (
-            list(range(batch_size, nodes))
-            + list(range(batch_size))
-            + list(range(nodes))
-        )
-        return pgl.Graph(
-            num_nodes=nodes,
-            edges=np.asarray(list(zip(source, target)), dtype=np.int64),
-        )

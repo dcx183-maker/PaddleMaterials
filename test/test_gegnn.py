@@ -1,57 +1,55 @@
 import os
+import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import paddle
+import pandas as pd
 from omegaconf import OmegaConf
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors
 
+from ppmat.datasets.build_solvent import BuildBinaryMixture
+from ppmat.datasets.build_solvent import BuildSolvent
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
-from ppmat.datasets.gegnn_dataset import _MOLECULAR_GRAPH_CFG
-from ppmat.datasets.gegnn_dataset import build_molecular_graph
 from ppmat.models import build_graph_converter
 from ppmat.models import build_model
 from ppmat.models.gegnn import GEGNNBinary
+from ppmat.predictor.property_predictor import PropertyPredictor
+from ppmat.vocab import build_vocab
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def solvent_builder():
+    config = OmegaConf.to_container(
+        OmegaConf.load(
+            os.path.join(
+                BASE_DIR,
+                "property_prediction",
+                "configs",
+                "gegnn",
+                "gegnn_binary_activity.yaml",
+            )
+        ),
+        resolve=True,
+    )
+    return BuildSolvent(
+        build_graph_converter(
+            config["Predict"]["graph_converter"],
+            vocab=build_vocab(config["Vocabulary"]),
+        )
+    )
 
 
 class TestGEGNNBinary(unittest.TestCase):
     @staticmethod
     def _synthetic_sample(composition, gamma=None):
-        samples = ["CCO", "O"]
-        solvent_features = []
-        for smiles in samples:
-            mol = Chem.MolFromSmiles(smiles)
-            hba = rdMolDescriptors.CalcNumHBA(mol)
-            hbd = rdMolDescriptors.CalcNumHBD(mol)
-            solvent_features.append(
-                {
-                    "graph": build_molecular_graph(
-                        mol, build_graph_converter(_MOLECULAR_GRAPH_CFG)
-                    ),
-                    "hba": hba,
-                    "hbd": hbd,
-                    "intra_hb": min(hba, hbd),
-                }
-            )
-        solv1, solv2 = solvent_features
-        sample = {
-            "g1": solv1["graph"],
-            "g2": solv2["graph"],
-            "x1": composition,
-            "x2": 1.0 - composition,
-            "intra_hb1": solv1["intra_hb"],
-            "intra_hb2": solv2["intra_hb"],
-            "inter_hb": min(solv1["hba"], solv2["hbd"])
-            + min(solv1["hbd"], solv2["hba"]),
-            "empty_solvsys": BinaryActivityDataset.generate_solvsys(1),
-        }
-        if gamma is not None:
-            sample["gamma1"], sample["gamma2"] = gamma
-        return sample
+        builder = solvent_builder()
+        return BuildBinaryMixture()(builder("CCO"), builder("O"), composition, gamma)
 
     @classmethod
     def _synthetic_batch(cls):
@@ -220,16 +218,179 @@ class TestGEGNNBinary(unittest.TestCase):
 
 
 class TestAtomFeaturization(unittest.TestCase):
-
     def test_molecular_graph_converter(self):
-        mol = Chem.MolFromSmiles("CCO")
-        graph = build_molecular_graph(
-            mol, build_graph_converter(_MOLECULAR_GRAPH_CFG)
-        )
+        graph = solvent_builder()("CCO")["graph"]
         self.assertIsNotNone(graph)
         self.assertEqual(graph.num_nodes, 3)
         self.assertIn("h", graph.node_feat)
         self.assertEqual(graph.node_feat["h"].shape[1], 74)
+
+    def test_reference_feature_values(self):
+        builder = solvent_builder()
+        vocab = builder.graph_converter.vocab
+
+        def one_hot(value, tokens):
+            return [int(value == token) for token in tokens]
+
+        for smiles in [
+            "CCO",
+            "O",
+            "N",
+            "c1ccncc1",
+            "[NH4+]",
+            "[CH3]",
+            "P(F)(F)(F)(F)F",
+        ]:
+            with self.subTest(smiles=smiles):
+                molecule = Chem.MolFromSmiles(smiles)
+                expected = []
+                for atom in molecule.GetAtoms():
+                    expected.append(
+                        one_hot(atom.GetSymbol(), vocab["atom"]["tokens"])
+                        + one_hot(atom.GetDegree(), list(range(11)))
+                        + one_hot(atom.GetImplicitValence(), list(range(7)))
+                        + [atom.GetFormalCharge(), atom.GetNumRadicalElectrons()]
+                        + one_hot(
+                            atom.GetHybridization(),
+                            [
+                                Chem.HybridizationType.SP,
+                                Chem.HybridizationType.SP2,
+                                Chem.HybridizationType.SP3,
+                                Chem.HybridizationType.SP3D,
+                                Chem.HybridizationType.SP3D2,
+                            ],
+                        )
+                        + [int(atom.GetIsAromatic())]
+                        + one_hot(atom.GetTotalNumHs(), list(range(5)))
+                    )
+                entry = builder(smiles)
+                np.testing.assert_array_equal(
+                    entry["graph"].node_feat["h"], np.asarray(expected, dtype="float32")
+                )
+                self.assertEqual(entry["hba"], rdMolDescriptors.CalcNumHBA(molecule))
+                self.assertEqual(entry["hbd"], rdMolDescriptors.CalcNumHBD(molecule))
+
+    def test_default_converter_feature_key(self):
+        builder = solvent_builder()
+        graph = build_graph_converter(
+            {
+                "__class_name__": "MolecularGraphConverter",
+                "__init_params__": {"vocab": builder.graph_converter.vocab},
+            }
+        )(Chem.MolFromSmiles("CCO"))
+        self.assertIn("feat", graph.node_feat)
+        self.assertNotIn("h", graph.node_feat)
+
+
+class TestBinaryActivityPipeline(unittest.TestCase):
+    def test_predictor_uses_shared_mixture_pipeline(self):
+        builder = solvent_builder()
+        predictor = object.__new__(PropertyPredictor)
+        predictor._run_model = lambda data: data
+        data = predictor.from_mixture(builder("CCO"), builder("O"), 0.5)
+        self.assertEqual(data["x1"].shape, (1, 1))
+        self.assertEqual(data["g1"].num_graph, 1)
+        self.assertNotIn("gamma", data)
+
+    def test_interaction_batch_keeps_samples_separate(self):
+        batch = TestGEGNNBinary._synthetic_batch()
+        batch["inter_hb"] = np.asarray([[10], [20]], dtype="float32")
+        batch["intra_hb1"] = np.asarray([[1], [2]], dtype="float32")
+        batch["intra_hb2"] = np.asarray([[3], [4]], dtype="float32")
+        hg1 = paddle.to_tensor([[1.0, 2.0], [3.0, 4.0]])
+        hg2 = paddle.to_tensor([[5.0, 6.0], [7.0, 8.0]])
+
+        def capture(graph, node_features, edge_features):
+            np.testing.assert_array_equal(
+                graph.edges.numpy(),
+                [[0, 1], [1, 0], [0, 0], [1, 1], [2, 3], [3, 2], [2, 2], [3, 3]],
+            )
+            np.testing.assert_array_equal(
+                node_features.numpy(), [[1, 2], [5, 6], [3, 4], [7, 8]]
+            )
+            np.testing.assert_array_equal(
+                edge_features.numpy(),
+                [
+                    [10, 1, 3],
+                    [10, 3, 1],
+                    [10, 1, 1],
+                    [10, 3, 3],
+                    [20, 2, 4],
+                    [20, 4, 2],
+                    [20, 2, 2],
+                    [20, 4, 4],
+                ],
+            )
+            return node_features
+
+        model = SimpleNamespace(
+            conv1=lambda graph, features: features,
+            conv2=lambda graph, features: features,
+            _as_column=GEGNNBinary._as_column,
+            global_conv1=capture,
+        )
+        with patch("ppmat.models.gegnn._segment_mean", side_effect=[hg1, hg2]):
+            output = GEGNNBinary._component_features(model, batch, 2)
+        np.testing.assert_array_equal(output.numpy(), paddle.concat([hg1, hg2]).numpy())
+
+    def test_mixture_labels_and_invalid_composition(self):
+        builder = solvent_builder()
+        first, second = builder("CCO"), builder("O")
+        sample = BuildBinaryMixture()(first, second, 0.25, [0.1, -0.2])
+        np.testing.assert_array_equal(
+            sample["gamma"], np.asarray([0.1, -0.2], dtype="float32")
+        )
+        self.assertEqual(sample["x1"].shape, (1,))
+        self.assertNotIn("gamma", BuildBinaryMixture()(first, second, 0.25))
+        for composition in [-0.1, 1.1, float("nan")]:
+            with self.assertRaises(ValueError):
+                BuildBinaryMixture()(first, second, composition)
+
+    def test_dataset_cache_reuse_and_invalidation(self):
+        config = OmegaConf.to_container(
+            OmegaConf.load(
+                os.path.join(
+                    BASE_DIR,
+                    "property_prediction",
+                    "configs",
+                    "gegnn",
+                    "gegnn_binary_activity.yaml",
+                )
+            ),
+            resolve=True,
+        )
+        params = config["Dataset"]["train"]["dataset"]["__init_params__"]
+        with tempfile.TemporaryDirectory() as root:
+            params["path"] = os.path.join(root, "train.csv")
+            params["cache_path"] = os.path.join(root, "cache")
+            pd.DataFrame(
+                {
+                    "solv1": [1],
+                    "solv2": [2],
+                    "solv1_x": [0.25],
+                    "solv1_gamma": [0.1],
+                    "solv2_gamma": [-0.2],
+                }
+            ).to_csv(params["path"], index=False)
+            pd.DataFrame({"solvent_id": [1, 2], "smiles_can": ["CCO", "O"]}).to_csv(
+                os.path.join(root, "solvent_list.csv"), index=False
+            )
+            first = BinaryActivityDataset(**params)
+            original_nodes = first[0]["g1"].num_nodes
+            with patch(
+                "ppmat.datasets.gegnn_dataset.BuildSolvent",
+                side_effect=AssertionError("cache should be reused"),
+            ):
+                cached = BinaryActivityDataset(**params)
+            np.testing.assert_array_equal(
+                first[0]["g1"].node_feat["h"], cached[0]["g1"].node_feat["h"]
+            )
+            params["build_molecule_cfg"] = {"format": "smiles", "add_hs": True}
+            rebuilt = BinaryActivityDataset(**params)
+            self.assertGreater(rebuilt[0]["g1"].num_nodes, original_nodes)
+            os.remove(rebuilt.graphs[0])
+            repaired = BinaryActivityDataset(**params)
+            self.assertTrue(os.path.exists(repaired.graphs[0]))
 
 
 if __name__ == "__main__":

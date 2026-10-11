@@ -346,6 +346,7 @@ class MolecularGraphConverter:
             the molecular graph. Defaults to True.
         add_self_loops (bool): Adds self-loops to the graph (edges connecting each
             node to itself).
+        node_feature_key (str): Key for encoded atom features. Defaults to "feat".
         num_cpus (Optional[int]): Number of CPUs for parallel graph construction.
             Defaults to 1。
     """
@@ -357,7 +358,9 @@ class MolecularGraphConverter:
         add_self_loops: bool = False,
         edge_mode: str = "bidirectional",
         num_cpus: Optional[int] = None,
+        node_feature_key: str = "feat",
     ) -> None:
+        self.node_feature_key = node_feature_key
         self.vocab = vocab
         self.remove_h = remove_h
         self.add_self_loops = add_self_loops
@@ -371,6 +374,7 @@ class MolecularGraphConverter:
         vocab: Dict,
         add_self_loops: bool,
         edge_mode: str = "bidirectional",
+        node_feature_key: str = "feat",
     ) -> Optional[pgl.Graph]:
         if mol is None:
             return None
@@ -383,47 +387,38 @@ class MolecularGraphConverter:
 
         atom_vocab = vocab["atom"]
         atom_token_to_id = atom_vocab["token_to_id"]
-        num_atom_embeddings = int(atom_vocab["num_embeddings"])
         bond_vocab = vocab["bond"]
         bond_token_to_id = bond_vocab["token_to_id"]
         num_bond_embeddings = int(bond_vocab["num_embeddings"])
         no_bond_id = bond_token_to_id["NO_BOND"]
 
-        # 1) Node Features: One-hot encoding of atomic symbols and optional features.
+        def one_hot(role, value):
+            role_vocab = vocab[role]
+            feature = np.zeros(int(role_vocab["num_embeddings"]), dtype=np.float32)
+            index = role_vocab["token_to_id"].get(value)
+            if index is not None:
+                feature[index] = 1.0
+            return feature.tolist()
+
         node_feats = []
         for atom in mol.GetAtoms():
-            feat = []
-            
-            sym = atom.GetSymbol()
-            if sym not in atom_token_to_id:
-                return None  # Unknown Elements
-            feat.extend(np.eye(num_atom_embeddings, dtype=np.float32)[atom_token_to_id[sym]])
-            
+            if atom.GetSymbol() not in atom_token_to_id:
+                return None
+            feat = one_hot("atom", atom.GetSymbol())
             if "degree" in vocab:
-                idx = vocab["degree"]["token_to_id"].get(atom.GetDegree(), -1)
-                feat.extend(np.eye(vocab["degree"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["degree"]["num_embeddings"], dtype=np.float32))
-
+                feat.extend(one_hot("degree", atom.GetDegree()))
             if "implicit_valence" in vocab:
-                idx = vocab["implicit_valence"]["token_to_id"].get(atom.GetImplicitValence(), -1)
-                feat.extend(np.eye(vocab["implicit_valence"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["implicit_valence"]["num_embeddings"], dtype=np.float32))
-            
+                feat.extend(one_hot("implicit_valence", atom.GetImplicitValence()))
             if "formal_charge" in vocab:
                 feat.append(float(atom.GetFormalCharge()))
-                
             if "radical_electrons" in vocab:
                 feat.append(float(atom.GetNumRadicalElectrons()))
-                
             if "hybridization" in vocab:
-                idx = vocab["hybridization"]["token_to_id"].get(atom.GetHybridization(), -1)
-                feat.extend(np.eye(vocab["hybridization"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["hybridization"]["num_embeddings"], dtype=np.float32))
-            
+                feat.extend(one_hot("hybridization", str(atom.GetHybridization())))
             if "is_aromatic" in vocab:
                 feat.append(float(atom.GetIsAromatic()))
-            
             if "total_num_hs" in vocab:
-                idx = vocab["total_num_hs"]["token_to_id"].get(atom.GetTotalNumHs(), -1)
-                feat.extend(np.eye(vocab["total_num_hs"]["num_embeddings"], dtype=np.float32)[idx] if idx != -1 else np.zeros(vocab["total_num_hs"]["num_embeddings"], dtype=np.float32))
-
+                feat.extend(one_hot("total_num_hs", atom.GetTotalNumHs()))
             node_feats.append(feat)
         x = np.asarray(node_feats, dtype=np.float32)
 
@@ -486,7 +481,7 @@ class MolecularGraphConverter:
         return pgl.Graph(
             num_nodes=int(x.shape[0]),
             edges=edges_e2,
-            node_feat={"feat": x},
+            node_feat={node_feature_key: x},
             edge_feat={"feat": edge_attr},
         )
 
@@ -501,6 +496,7 @@ class MolecularGraphConverter:
                 [self.vocab] * len(mols),
                 [self.add_self_loops] * len(mols),
                 [self.edge_mode] * len(mols),
+                [self.node_feature_key] * len(mols),
                 num_cpus=self.num_cpus,
                 desc="Building graphs",
                 dynamic_ncols=True,
@@ -513,6 +509,7 @@ class MolecularGraphConverter:
                 self.vocab,
                 self.add_self_loops,
                 self.edge_mode,
+                self.node_feature_key,
             )
 
 
